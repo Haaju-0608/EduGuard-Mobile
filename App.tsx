@@ -106,12 +106,16 @@ function AppContent() {
     );
   }
 
+  // GestureHandlerRootView wraps only the navigation stack — not LoginScreen
+  // to prevent gesture handler from intercepting keyboard events on Android
   return (
-    <ActivityWrapper onActivity={resetTimer}>
-      <NavigationContainer>
-        <MainStackNavigator />
-      </NavigationContainer>
-    </ActivityWrapper>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <ActivityWrapper onActivity={resetTimer}>
+        <NavigationContainer>
+          <MainStackNavigator />
+        </NavigationContainer>
+      </ActivityWrapper>
+    </GestureHandlerRootView>
   );
 }
 
@@ -138,13 +142,11 @@ export default function App() {
   }
 
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
-      <SafeAreaProvider>
-        <AuthProvider>
-          <AppContent />
-        </AuthProvider>
-      </SafeAreaProvider>
-    </GestureHandlerRootView>
+    <SafeAreaProvider>
+      <AuthProvider>
+        <AppContent />
+      </AuthProvider>
+    </SafeAreaProvider>
   );
 }
 

@@ -7,7 +7,7 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
-import { useAuth, resolveUser } from '../../navigation/AuthContext';
+import { useAuth } from '../../navigation/AuthContext';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { StatusBar } from 'expo-status-bar';
@@ -16,7 +16,6 @@ import { Button } from '../../components/ui/Button';
 import { Input, EyeToggle } from '../../components/ui/Input';
 import { COLORS, FONTS, RADIUS } from '../../constants/theme';
 
-// ── Simple SVG-replacement icons (text-based) ──────────────────
 function MailIcon() {
   return <AppText style={s.icon}>✉</AppText>;
 }
@@ -38,18 +37,16 @@ function ShieldLogo() {
   );
 }
 
-// ── Background decorative orbs ──────────────────────────────────
 function BackgroundOrbs() {
   return (
-    <>
+    <View pointerEvents="none" style={StyleSheet.absoluteFill}>
       <View style={[s.orb, s.orb1]} />
       <View style={[s.orb, s.orb2]} />
       <View style={[s.orb, s.orb3]} />
-    </>
+    </View>
   );
 }
 
-// ── Feature pill ───────────────────────────────────────────────
 function FeaturePill({ label }: { label: string }) {
   return (
     <View style={s.pill}>
@@ -58,37 +55,6 @@ function FeaturePill({ label }: { label: string }) {
   );
 }
 
-// ── Demo account quick-fill button ─────────────────────────────
-interface DemoAccountProps {
-  emoji: string;
-  title: string;
-  subtitle: string;
-  onPress: () => void;
-  accentColor: string;
-}
-
-function DemoAccount({ emoji, title, subtitle, onPress, accentColor }: DemoAccountProps) {
-  return (
-    <TouchableOpacity
-      onPress={onPress}
-      activeOpacity={0.75}
-      style={s.demoBtn}
-    >
-      <View style={[s.demoAvatar, { backgroundColor: accentColor + '22' }]}>
-        <AppText style={{ fontSize: 16 }}>{emoji}</AppText>
-      </View>
-      <View style={{ flex: 1 }}>
-        <AppText variant="semi" color={COLORS.whiteSoft} style={{ fontSize: 13 }}>
-          {title}
-        </AppText>
-        <AppText variant="caption" style={{ marginTop: 1 }}>{subtitle}</AppText>
-      </View>
-      <AppText style={{ color: COLORS.muted, fontSize: 12 }}>Fill →</AppText>
-    </TouchableOpacity>
-  );
-}
-
-// ── Main screen ─────────────────────────────────────────────────
 export default function LoginScreen() {
   const { login } = useAuth();
   const [email, setEmail] = useState('');
@@ -98,11 +64,13 @@ export default function LoginScreen() {
   const [loading, setLoading] = useState(false);
   const [emailError, setEmailError] = useState('');
   const [passwordError, setPasswordError] = useState('');
+  const [loginError, setLoginError] = useState('');
 
   const validate = () => {
     let valid = true;
     setEmailError('');
     setPasswordError('');
+    setLoginError('');
 
     if (!email.trim()) {
       setEmailError('Please enter your email.');
@@ -124,16 +92,14 @@ export default function LoginScreen() {
   const handleLogin = async () => {
     if (!validate()) return;
     setLoading(true);
-    await new Promise((r) => setTimeout(r, 1500));
-    setLoading(false);
-    login(resolveUser(email));
-  };
-
-  const fillDemo = (demoEmail: string, demoPass: string) => {
-    setEmail(demoEmail);
-    setPassword(demoPass);
-    setEmailError('');
-    setPasswordError('');
+    try {
+      await login(email.trim(), password);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Login failed. Please try again.';
+      setLoginError(msg);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -148,7 +114,7 @@ export default function LoginScreen() {
         >
           <ScrollView
             contentContainerStyle={s.scroll}
-            keyboardShouldPersistTaps="handled"
+            keyboardShouldPersistTaps="always"
             showsVerticalScrollIndicator={false}
           >
             {/* ── Header / Logo ── */}
@@ -180,7 +146,6 @@ export default function LoginScreen() {
 
             {/* ── Login form card ── */}
             <View style={s.formCard}>
-              {/* Accent top bar */}
               <LinearGradient
                 colors={['#2563EB', '#06B6D4']}
                 start={{ x: 0, y: 0 }}
@@ -195,13 +160,12 @@ export default function LoginScreen() {
                 Enter your credentials to continue.
               </AppText>
 
-              {/* Email field */}
               <Input
                 label="Email"
                 icon={<MailIcon />}
                 value={email}
-                onChangeText={(t) => { setEmail(t); setEmailError(''); }}
-                placeholder="your@student.edu.vn"
+                onChangeText={(t) => { setEmail(t); setEmailError(''); setLoginError(''); }}
+                placeholder="Email"
                 keyboardType="email-address"
                 autoCapitalize="none"
                 autoCorrect={false}
@@ -210,12 +174,11 @@ export default function LoginScreen() {
 
               <View style={{ height: 14 }} />
 
-              {/* Password field */}
               <Input
                 label="Password"
                 icon={<LockIcon />}
                 value={password}
-                onChangeText={(t) => { setPassword(t); setPasswordError(''); }}
+                onChangeText={(t) => { setPassword(t); setPasswordError(''); setLoginError(''); }}
                 placeholder="••••••••"
                 secureTextEntry={!showPassword}
                 rightElement={
@@ -246,7 +209,12 @@ export default function LoginScreen() {
                 </TouchableOpacity>
               </View>
 
-              {/* Sign-in button */}
+              {loginError ? (
+                <View style={s.errorBox}>
+                  <AppText style={s.errorText}>{loginError}</AppText>
+                </View>
+              ) : null}
+
               <View style={{ marginTop: 20 }}>
                 <Button
                   label={loading ? '' : 'Sign In'}
@@ -255,33 +223,6 @@ export default function LoginScreen() {
                   style={{ width: '100%' }}
                 />
               </View>
-            </View>
-
-            {/* ── Divider ── */}
-            <View style={s.divider}>
-              <View style={s.dividerLine} />
-              <AppText variant="caption" style={{ marginHorizontal: 12 }}>
-                Demo accounts
-              </AppText>
-              <View style={s.dividerLine} />
-            </View>
-
-            {/* ── Demo accounts ── */}
-            <View style={s.demoSection}>
-              <DemoAccount
-                emoji="🎓"
-                title="Student"
-                subtitle="student@edu.vn / string"
-                accentColor={COLORS.blueBright}
-                onPress={() => fillDemo('student@edu.vn', 'string')}
-              />
-              <DemoAccount
-                emoji="👨‍🏫"
-                title="Lecturer"
-                subtitle="lecturer@edu.vn / string"
-                accentColor={COLORS.cyan}
-                onPress={() => fillDemo('lecturer@edu.vn', 'string')}
-              />
             </View>
 
             <View style={{ height: 32 }} />
@@ -298,7 +239,6 @@ const s = StyleSheet.create({
     backgroundColor: COLORS.navy,
   },
 
-  // ── Background orbs ──
   orb: {
     position: 'absolute',
     borderRadius: RADIUS.full,
@@ -325,14 +265,12 @@ const s = StyleSheet.create({
     backgroundColor: 'rgba(37,99,235,0.07)',
   },
 
-  // ── Scroll ──
   scroll: {
     flexGrow: 1,
     paddingHorizontal: 22,
     paddingTop: 20,
   },
 
-  // ── Header ──
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -358,7 +296,6 @@ const s = StyleSheet.create({
     fontSize: 26,
   },
 
-  // ── Hero ──
   heroSection: {
     marginBottom: 18,
   },
@@ -367,7 +304,6 @@ const s = StyleSheet.create({
     lineHeight: 32,
   },
 
-  // ── Pills ──
   pillRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -388,7 +324,6 @@ const s = StyleSheet.create({
     color: COLORS.muted,
   },
 
-  // ── Form card ──
   formCard: {
     backgroundColor: COLORS.navyCard,
     borderRadius: RADIUS['2xl'],
@@ -396,13 +331,6 @@ const s = StyleSheet.create({
     borderColor: COLORS.border,
     padding: 20,
     paddingTop: 24,
-    overflow: 'hidden',
-    // Glow effect
-    shadowColor: '#2563EB',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.12,
-    shadowRadius: 24,
-    elevation: 10,
   },
   cardAccentBar: {
     position: 'absolute',
@@ -410,9 +338,10 @@ const s = StyleSheet.create({
     left: 0,
     right: 0,
     height: 3,
+    borderTopLeftRadius: RADIUS['2xl'],
+    borderTopRightRadius: RADIUS['2xl'],
   },
 
-  // ── Remember row ──
   rememberRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -438,42 +367,21 @@ const s = StyleSheet.create({
     borderColor: COLORS.blue,
   },
 
-  // ── Divider ──
-  divider: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginVertical: 22,
-  },
-  dividerLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: COLORS.border,
-  },
-
-  // ── Demo accounts ──
-  demoSection: {
-    gap: 10,
-  },
-  demoBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    backgroundColor: COLORS.navyCard,
+  errorBox: {
+    marginTop: 14,
+    backgroundColor: 'rgba(239,68,68,0.12)',
     borderWidth: 1,
-    borderColor: COLORS.border,
-    borderRadius: RADIUS.lg,
+    borderColor: 'rgba(239,68,68,0.35)',
+    borderRadius: RADIUS.md,
     paddingHorizontal: 14,
-    paddingVertical: 12,
+    paddingVertical: 10,
   },
-  demoAvatar: {
-    width: 38,
-    height: 38,
-    borderRadius: RADIUS.full,
-    alignItems: 'center',
-    justifyContent: 'center',
+  errorText: {
+    fontSize: 13,
+    color: '#F87171',
+    lineHeight: 18,
   },
 
-  // ── Icon placeholder ──
   icon: {
     fontSize: 15,
     color: COLORS.muted,

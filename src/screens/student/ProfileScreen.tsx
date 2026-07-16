@@ -96,10 +96,6 @@ export default function ProfileScreen() {
             <InfoRow label="Student ID"  value={user.studentId} />
             <View style={s.divider} />
             <InfoRow label="Email"       value={user.email}     />
-            <View style={s.divider} />
-            <InfoRow label="Class"       value={user.class}     />
-            <View style={s.divider} />
-            <InfoRow label="Department"  value="School of Information Technology" />
           </View>
 
           {/* ── Biometrics card ── */}

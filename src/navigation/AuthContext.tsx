@@ -1,73 +1,60 @@
 import React, { createContext, useContext, useState } from 'react';
+import * as SecureStore from 'expo-secure-store';
+import { loginApi } from '../api/auth';
+import { setAuthToken } from '../api/client';
 
-// ── Types ────────────────────────────────────────────────────────────────────────
-export interface MockUser {
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+export interface AppUser {
+  id: string;
   email: string;
   name: string;
   studentId: string;
-  class: string;
+  role: 'student' | 'lecturer' | 'schoolAdmin' | 'superAdmin';
   hasRegisteredFace: boolean;
-  role: 'student' | 'lecturer';
 }
 
 interface AuthState {
   isLoggedIn: boolean;
   hasRegisteredFace: boolean;
-  user: MockUser | null;
+  user: AppUser | null;
 }
 
 interface AuthContextType {
   authState: AuthState;
-  login: (user: MockUser) => void;
+  login: (email: string, password: string) => Promise<void>;
   completeFaceRegistration: () => void;
   logout: () => void;
 }
 
-// ── Mock user database ───────────────────────────────────────────────────────────
-export const MOCK_USERS: Record<string, MockUser> = {
-  'student@edu.vn': {
-    email: 'student@edu.vn',
-    name: 'Tran Nguyen Khanh',
-    studentId: '20227183',
-    class: 'IT-K66-A2',
-    hasRegisteredFace: false,
-    role: 'student',
-  },
-  'lecturer@edu.vn': {
-    email: 'lecturer@edu.vn',
-    name: 'Nguyen Van An',
-    studentId: '20215678',
-    class: 'IT-K65-B1',
-    hasRegisteredFace: true,
-    role: 'lecturer',
-  },
-};
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-// Persists within the app session: once a user registers their face, they won't
-// be prompted again on subsequent logins (until the app is fully restarted).
-const faceRegisteredCache = new Set<string>();
-
-export function resolveUser(email: string): MockUser {
-  const base =
-    MOCK_USERS[email.trim().toLowerCase()] ?? {
-      email: email.trim().toLowerCase(),
-      name: 'Student User',
-      studentId: '20229999',
-      class: 'IT-K67-A1',
-      hasRegisteredFace: false,
-      role: 'student' as const,
-    };
-
-  return {
-    ...base,
-    hasRegisteredFace: base.hasRegisteredFace || faceRegisteredCache.has(base.email),
-  };
+function faceKey(email: string) {
+  return `face_registered_${email.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
 }
 
-// ── Context ──────────────────────────────────────────────────────────────────────
+async function isFaceRegistered(email: string): Promise<boolean> {
+  try {
+    const val = await SecureStore.getItemAsync(faceKey(email));
+    return val === 'true';
+  } catch {
+    return false;
+  }
+}
+
+async function saveFaceRegistered(email: string): Promise<void> {
+  try {
+    await SecureStore.setItemAsync(faceKey(email), 'true');
+  } catch {
+    // Ignore — worst case user re-registers once
+  }
+}
+
+// ── Context ───────────────────────────────────────────────────────────────────
+
 const AuthContext = createContext<AuthContextType>({
   authState: { isLoggedIn: false, hasRegisteredFace: false, user: null },
-  login: () => {},
+  login: async () => {},
   completeFaceRegistration: () => {},
   logout: () => {},
 });
@@ -79,19 +66,43 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     user: null,
   });
 
-  const login = (user: MockUser) => {
-    setAuthState({ isLoggedIn: true, hasRegisteredFace: user.hasRegisteredFace, user });
+  const login = async (email: string, password: string) => {
+    const { me } = await loginApi(email, password);
+
+    const roleMap: Record<string, AppUser['role']> = {
+      Student: 'student',
+      Lecturer: 'lecturer',
+      SchoolAdmin: 'schoolAdmin',
+      SuperAdmin: 'superAdmin',
+    };
+
+    const alreadyRegistered = await isFaceRegistered(me.email);
+
+    const user: AppUser = {
+      id: me.id,
+      email: me.email,
+      name: me.fullName,
+      studentId: me.studentCode ?? '',
+      role: roleMap[me.role] ?? 'student',
+      hasRegisteredFace: alreadyRegistered,
+    };
+
+    setAuthState({
+      isLoggedIn: true,
+      hasRegisteredFace: alreadyRegistered,
+      user,
+    });
   };
 
   const completeFaceRegistration = () => {
-    // Cache so this email skips face registration on future logins this session
     if (authState.user?.email) {
-      faceRegisteredCache.add(authState.user.email);
+      saveFaceRegistered(authState.user.email);
     }
     setAuthState((prev) => ({ ...prev, hasRegisteredFace: true }));
   };
 
   const logout = () => {
+    setAuthToken(null);
     setAuthState({ isLoggedIn: false, hasRegisteredFace: false, user: null });
   };
 

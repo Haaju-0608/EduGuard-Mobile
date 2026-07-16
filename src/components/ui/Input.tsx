@@ -94,11 +94,6 @@ const styles = StyleSheet.create({
   },
   containerFocused: {
     borderColor: 'rgba(59,130,246,0.5)',
-    shadowColor: '#2563EB',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.15,
-    shadowRadius: 8,
-    elevation: 4,
   },
   containerError: {
     borderColor: 'rgba(239,68,68,0.5)',

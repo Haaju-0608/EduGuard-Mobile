@@ -1,518 +1,633 @@
-import React, { useState, useMemo, useRef, useEffect } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
-  View,
+  ActivityIndicator,
+  RefreshControl,
   ScrollView,
-  TouchableOpacity,
   StyleSheet,
-  Animated,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
+import { LinearGradient } from 'expo-linear-gradient';
 import { AppText } from '../../components/ui/AppText';
-import { COLORS, FONTS, RADIUS } from '../../constants/theme';
+import { COLORS, FONTS, GRADIENTS, RADIUS } from '../../constants/theme';
+import { getExamSlotsByClass, getMyClasses, ExamSlot, MyClass } from '../../api/schedule';
 
-// ── Types ───────────────────────────────────────────────────────────────────────
-type ItemType = 'Class' | 'Exam';
-type ItemStatus = 'Upcoming' | 'In Progress' | 'Past';
+// ── Types ─────────────────────────────────────────────────────────────────────
 
-interface ScheduleItem {
-  id: string;
-  subject: string;
-  room: string;
-  time: string;
-  type: ItemType;
-  status: ItemStatus;
-  instructor: string;
-  credits?: number;
+type BadgeType = 'upcoming' | 'now' | 'past' | 'cancelled';
+
+interface ExamSlotWithClass extends ExamSlot {
+  className: string;
 }
 
-interface ScheduleGroup {
-  dateLabel: string;
-  date: string;
-  items: ScheduleItem[];
+interface DayGroup {
+  label: string;
+  slots: ExamSlotWithClass[];
 }
 
-// ── Mock data ───────────────────────────────────────────────────────────────────
-const MOCK_SCHEDULE: ScheduleGroup[] = [
-  {
-    dateLabel: 'Today',
-    date: 'Fri, Jun 27',
-    items: [
-      {
-        id: '1',
-        subject: 'Advanced Mathematics',
-        room: 'Room B.204',
-        time: '07:30 – 09:00',
-        type: 'Class',
-        status: 'Past',
-        instructor: 'Dr. Nguyen Van An',
-        credits: 3,
-      },
-      {
-        id: '2',
-        subject: 'Software Engineering',
-        room: 'Room A.501',
-        time: '09:30 – 11:00',
-        type: 'Class',
-        status: 'In Progress',
-        instructor: 'Dr. Le Thi Bich',
-        credits: 4,
-      },
-      {
-        id: '3',
-        subject: 'Database Systems',
-        room: 'Exam Hall 1',
-        time: '14:00 – 15:30',
-        type: 'Exam',
-        status: 'Upcoming',
-        instructor: 'Dr. Tran Van Cuong',
-      },
-    ],
-  },
-  {
-    dateLabel: 'Tomorrow',
-    date: 'Sat, Jun 28',
-    items: [
-      {
-        id: '4',
-        subject: 'Computer Networks',
-        room: 'Room B.301',
-        time: '07:30 – 09:00',
-        type: 'Class',
-        status: 'Upcoming',
-        instructor: 'Dr. Pham Thi Dung',
-        credits: 3,
-      },
-      {
-        id: '5',
-        subject: 'Operating Systems',
-        room: 'Room B.401',
-        time: '13:00 – 14:30',
-        type: 'Class',
-        status: 'Upcoming',
-        instructor: 'Dr. Ho Van Em',
-        credits: 3,
-      },
-    ],
-  },
-  {
-    dateLabel: 'Mon, Jun 30',
-    date: 'Mon, Jun 30',
-    items: [
-      {
-        id: '6',
-        subject: 'Artificial Intelligence',
-        room: 'Exam Hall 2',
-        time: '08:00 – 10:00',
-        type: 'Exam',
-        status: 'Upcoming',
-        instructor: 'Dr. Vo Thi Phuong',
-      },
-      {
-        id: '7',
-        subject: 'Human-Computer Interaction',
-        room: 'Room C.102',
-        time: '13:30 – 15:00',
-        type: 'Class',
-        status: 'Upcoming',
-        instructor: 'Dr. Ngo Van Giang',
-        credits: 2,
-      },
-    ],
-  },
-];
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-// ── Config ──────────────────────────────────────────────────────────────────────
-const TYPE_CFG: Record<ItemType, { bar: string; badgeText: string; badgeBg: string; badgeBorder: string }> = {
-  Class: {
-    bar: COLORS.blue,
-    badgeText: COLORS.blueBright,
-    badgeBg: 'rgba(37,99,235,0.10)',
-    badgeBorder: 'rgba(37,99,235,0.28)',
-  },
-  Exam: {
-    bar: COLORS.gold,
-    badgeText: COLORS.gold,
-    badgeBg: 'rgba(245,158,11,0.10)',
-    badgeBorder: 'rgba(245,158,11,0.28)',
-  },
-};
+function isSameDay(a: Date, b: Date): boolean {
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
+}
 
-const STATUS_CFG: Record<
-  ItemStatus,
-  { label: string; color: string; bg: string; icon: string }
+function getDayLabel(isoDate: string): string {
+  const date = new Date(isoDate);
+  const today = new Date();
+  const tomorrow = new Date(today);
+  tomorrow.setDate(today.getDate() + 1);
+
+  if (isSameDay(date, today)) return 'TODAY';
+  if (isSameDay(date, tomorrow)) return 'TOMORROW';
+
+  return date.toLocaleDateString('en-US', {
+    weekday: 'short',
+    day: '2-digit',
+    month: 'short',
+  });
+}
+
+function computeBadge(slot: ExamSlot): BadgeType {
+  if (slot.status === 'Cancelled') return 'cancelled';
+  const now = Date.now();
+  const start = new Date(slot.startTime).getTime();
+  const end = new Date(slot.endTime).getTime();
+  if (now > end) return 'past';
+  if (now >= start && now <= end) return 'now';
+  return 'upcoming';
+}
+
+function formatTime(iso: string): string {
+  return new Date(iso).toLocaleTimeString('en-US', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}
+
+function groupByDay(slots: ExamSlotWithClass[]): DayGroup[] {
+  const map = new Map<string, ExamSlotWithClass[]>();
+
+  const sorted = [...slots].sort(
+    (a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime(),
+  );
+
+  for (const slot of sorted) {
+    const label = getDayLabel(slot.startTime);
+    if (!map.has(label)) map.set(label, []);
+    map.get(label)!.push(slot);
+  }
+
+  return Array.from(map.entries()).map(([label, s]) => ({ label, slots: s }));
+}
+
+// ── Badge config ──────────────────────────────────────────────────────────────
+
+const BADGE_CFG: Record<
+  BadgeType,
+  { bg: string; border: string; text: string; label: string }
 > = {
-  Upcoming: { label: 'Upcoming', color: COLORS.cyan,  bg: 'rgba(6,182,212,0.12)',   icon: '↑' },
-  'In Progress': { label: 'Now',  color: COLORS.green, bg: 'rgba(16,185,129,0.12)', icon: '●' },
-  Past:      { label: 'Past',    color: 'rgba(241,245,255,0.30)', bg: 'rgba(241,245,255,0.05)', icon: '✓' },
+  upcoming: {
+    bg: 'rgba(37,99,235,0.13)',
+    border: 'rgba(59,130,246,0.30)',
+    text: COLORS.blueBright,
+    label: 'Upcoming',
+  },
+  now: {
+    bg: 'rgba(16,185,129,0.13)',
+    border: 'rgba(16,185,129,0.30)',
+    text: COLORS.green,
+    label: 'Live',
+  },
+  past: {
+    bg: 'rgba(241,245,255,0.05)',
+    border: 'rgba(241,245,255,0.10)',
+    text: 'rgba(241,245,255,0.35)',
+    label: 'Past',
+  },
+  cancelled: {
+    bg: 'rgba(239,68,68,0.12)',
+    border: 'rgba(239,68,68,0.28)',
+    text: COLORS.red,
+    label: 'Cancelled',
+  },
 };
 
-// ── Pulsing "live" dot for In-Progress ─────────────────────────────────────────
-function LiveDot() {
-  const anim = useRef(new Animated.Value(1)).current;
-  useEffect(() => {
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(anim, { toValue: 0.25, duration: 720, useNativeDriver: true }),
-        Animated.timing(anim, { toValue: 1,    duration: 720, useNativeDriver: true }),
-      ])
-    ).start();
-  }, []);
-  return <Animated.View style={[s.liveDot, { opacity: anim }]} />;
+// ── Status Badge ──────────────────────────────────────────────────────────────
+
+function StatusBadge({ type }: { type: BadgeType }) {
+  const cfg = BADGE_CFG[type];
+  return (
+    <View style={[s.badge, { backgroundColor: cfg.bg, borderColor: cfg.border }]}>
+      {type === 'now' && <View style={s.liveDot} />}
+      <AppText style={[s.badgeText, { color: cfg.text }]}>{cfg.label}</AppText>
+    </View>
+  );
 }
 
-// ── Schedule card ───────────────────────────────────────────────────────────────
-function ScheduleCard({ item }: { item: ScheduleItem }) {
-  const type   = TYPE_CFG[item.type];
-  const status = STATUS_CFG[item.status];
-  const isPast = item.status === 'Past';
+// ── Exam Card ─────────────────────────────────────────────────────────────────
+
+function ExamCard({ slot }: { slot: ExamSlotWithClass }) {
+  const badge = computeBadge(slot);
+  const isPast = badge === 'past';
+  const accentColor = badge === 'now' ? COLORS.green : badge === 'cancelled' ? COLORS.red : COLORS.gold;
+  const duration = slot.expectedDurationMinutes
+    ? `  ·  ${slot.expectedDurationMinutes} min`
+    : '';
 
   return (
-    <View style={[s.card, { borderLeftColor: type.bar }]}>
-      {/* Subject + status badge */}
-      <View style={s.cardRow}>
-        <AppText
-          variant="semi"
-          color={isPast ? 'rgba(241,245,255,0.40)' : COLORS.whiteSoft}
-          numberOfLines={1}
-          style={s.cardSubject}
-        >
-          {item.subject}
-        </AppText>
+    <View style={[s.card, isPast && s.cardPast]}>
+      {/* Left accent bar */}
+      <View style={[s.cardAccent, { backgroundColor: accentColor }]} />
 
-        <View style={[s.statusBadge, { backgroundColor: status.bg }]}>
-          {item.status === 'In Progress' ? (
-            <LiveDot />
-          ) : (
-            <AppText style={[s.statusIcon, { color: status.color }]}>
-              {status.icon}
+      <View style={s.cardBody}>
+        {/* Top row: name + badge */}
+        <View style={s.cardTopRow}>
+          <AppText
+            variant="semi"
+            color={isPast ? 'rgba(241,245,255,0.45)' : COLORS.whiteSoft}
+            numberOfLines={2}
+            style={s.examName}
+          >
+            {slot.examName}
+          </AppText>
+          <StatusBadge type={badge} />
+        </View>
+
+        {/* Class chip */}
+        <View style={s.classChip}>
+          <AppText style={s.classChipText}>{slot.className}</AppText>
+        </View>
+
+        {/* Time */}
+        <View style={s.metaRow}>
+          <AppText style={s.metaIcon}>🕐</AppText>
+          <AppText variant="body-sm" color={isPast ? 'rgba(241,245,255,0.30)' : COLORS.muted}>
+            {formatTime(slot.startTime)} – {formatTime(slot.endTime)}{duration}
+          </AppText>
+        </View>
+
+        {/* Lecturer */}
+        {slot.lecturer?.fullName ? (
+          <View style={s.metaRow}>
+            <AppText style={s.metaIcon}>👤</AppText>
+            <AppText variant="body-sm" color={isPast ? 'rgba(241,245,255,0.30)' : COLORS.muted}>
+              {slot.lecturer.fullName}
             </AppText>
-          )}
-          <AppText style={[s.statusLabel, { color: status.color }]}>
-            {status.label}
-          </AppText>
-        </View>
-      </View>
-
-      {/* Time */}
-      <AppText
-        variant="body-sm"
-        color={isPast ? 'rgba(241,245,255,0.30)' : 'rgba(241,245,255,0.60)'}
-        style={{ fontSize: 12, marginBottom: 2 }}
-      >
-        🕐  {item.time}
-      </AppText>
-
-      {/* Room · instructor · type badge */}
-      <View style={s.cardRow}>
-        <AppText
-          variant="caption"
-          color={isPast ? 'rgba(241,245,255,0.25)' : 'rgba(241,245,255,0.50)'}
-          numberOfLines={1}
-          style={{ flex: 1 }}
-        >
-          📍 {item.room}  ·  {item.instructor}
-        </AppText>
-
-        <View style={[s.typeBadge, { backgroundColor: type.badgeBg, borderColor: type.badgeBorder }]}>
-          <AppText style={[s.typeBadgeText, { color: type.badgeText }]}>
-            {item.type.toUpperCase()}
-          </AppText>
-        </View>
+          </View>
+        ) : null}
       </View>
     </View>
   );
 }
 
-// ── Date group header ───────────────────────────────────────────────────────────
-function GroupHeader({ dateLabel, date }: { dateLabel: string; date: string }) {
-  const isToday    = dateLabel === 'Today';
-  const isTomorrow = dateLabel === 'Tomorrow';
-  const accentColor = isToday ? COLORS.cyan : isTomorrow ? COLORS.blueBright : undefined;
+// ── Day Group Header ──────────────────────────────────────────────────────────
+
+function DayHeader({ label }: { label: string }) {
+  const isToday    = label === 'TODAY';
+  const isTomorrow = label === 'TOMORROW';
+  const color = isToday ? COLORS.cyan : isTomorrow ? '#818cf8' : COLORS.muted;
 
   return (
-    <View style={s.groupHeader}>
-      <AppText
-        variant="label"
-        color={accentColor ?? 'rgba(241,245,255,0.38)'}
-        style={{ letterSpacing: 1.1 }}
-      >
-        {dateLabel.toUpperCase()}
-      </AppText>
-      {(isToday || isTomorrow) && (
-        <AppText variant="caption" style={{ marginLeft: 8 }}>
-          {date}
-        </AppText>
-      )}
-      <View style={s.groupHeaderLine} />
+    <View style={s.dayHeader}>
+      <AppText style={[s.dayLabel, { color }]}>{label}</AppText>
+      <View style={s.daySep} />
     </View>
   );
 }
 
-// ── Filter pill ─────────────────────────────────────────────────────────────────
-type FilterKey = 'all' | 'class' | 'exam';
+// ── Stats Row ─────────────────────────────────────────────────────────────────
 
-function FilterPill({
+function StatsRow({ slots }: { slots: ExamSlotWithClass[] }) {
+  const upcoming = slots.filter((s) => computeBadge(s) === 'upcoming').length;
+  const live     = slots.filter((s) => computeBadge(s) === 'now').length;
+
+  return (
+    <View style={s.statsRow}>
+      <StatCard label="Total" value={slots.length} colors={GRADIENTS.heading} />
+      <StatCard label="Upcoming" value={upcoming}  colors={['#7c3aed', '#4f46e5']} />
+      <StatCard label="Live Now" value={live}       colors={GRADIENTS.success} />
+    </View>
+  );
+}
+
+function StatCard({
   label,
-  active,
-  onPress,
+  value,
+  colors,
 }: {
   label: string;
-  active: boolean;
-  onPress: () => void;
+  value: number;
+  colors: readonly [string, string];
 }) {
   return (
-    <TouchableOpacity
-      onPress={onPress}
-      activeOpacity={0.75}
-      style={[s.filterPill, active && s.filterPillActive]}
-    >
-      <AppText
-        variant="body-sm"
-        color={active ? COLORS.whiteSoft : COLORS.muted}
-        style={s.filterPillText}
-      >
-        {label}
-      </AppText>
-    </TouchableOpacity>
-  );
-}
-
-// ── Summary stat ────────────────────────────────────────────────────────────────
-function StatBadge({ count, label, color }: { count: number; label: string; color: string }) {
-  return (
-    <View style={[s.statBadge, { borderColor: color + '44', backgroundColor: color + '14' }]}>
-      <AppText style={[s.statCount, { color }]}>{count}</AppText>
-      <AppText variant="caption" color={COLORS.muted} style={{ marginLeft: 4 }}>
-        {label}
-      </AppText>
+    <View style={s.statCard}>
+      <LinearGradient
+        colors={colors}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={s.statAccentBar}
+      />
+      <AppText style={s.statValue}>{value}</AppText>
+      <AppText variant="caption">{label}</AppText>
     </View>
   );
 }
 
-// ── Main screen ─────────────────────────────────────────────────────────────────
+// ── Main Screen ───────────────────────────────────────────────────────────────
+
 export default function ScheduleScreen() {
-  const [filter, setFilter] = useState<FilterKey>('all');
+  const [groups,     setGroups]     = useState<DayGroup[]>([]);
+  const [allSlots,   setAllSlots]   = useState<ExamSlotWithClass[]>([]);
+  const [loading,    setLoading]    = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [failCount,  setFailCount]  = useState(0);
+  const [fatalError, setFatalError] = useState<string | null>(null);
 
-  const allItems = MOCK_SCHEDULE.flatMap((g) => g.items);
-  const upcoming = allItems.filter((i) => i.status === 'Upcoming').length;
-  const exams    = allItems.filter((i) => i.type === 'Exam').length;
+  const loadData = useCallback(async () => {
+    setFatalError(null);
+    setFailCount(0);
 
-  const filteredGroups = useMemo(() => {
-    if (filter === 'all') return MOCK_SCHEDULE;
-    const t: ItemType = filter === 'class' ? 'Class' : 'Exam';
-    return MOCK_SCHEDULE.map((g) => ({ ...g, items: g.items.filter((i) => i.type === t) })).filter(
-      (g) => g.items.length > 0
+    let classes: MyClass[] = [];
+    try {
+      classes = await getMyClasses();
+    } catch (e: any) {
+      setFatalError(e?.message ?? 'Failed to load your classes');
+      return;
+    }
+
+    if (classes.length === 0) {
+      setGroups([]);
+      setAllSlots([]);
+      return;
+    }
+
+    const results = await Promise.allSettled(
+      classes.map((cls) =>
+        getExamSlotsByClass(cls.id).then((slots) =>
+          slots.map((sl) => ({ ...sl, className: cls.name })),
+        ),
+      ),
     );
-  }, [filter]);
+
+    let errors = 0;
+    const combined: ExamSlotWithClass[] = [];
+    for (const r of results) {
+      if (r.status === 'fulfilled') combined.push(...r.value);
+      else errors++;
+    }
+
+    setFailCount(errors);
+    setAllSlots(combined);
+    setGroups(groupByDay(combined));
+  }, []);
+
+  useEffect(() => {
+    setLoading(true);
+    loadData().finally(() => setLoading(false));
+  }, [loadData]);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await loadData();
+    setRefreshing(false);
+  }, [loadData]);
+
+  // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
     <View style={s.root}>
       <StatusBar style="light" />
+      {/* Decorative orbs */}
       <View style={[s.orb, s.orb1]} />
       <View style={[s.orb, s.orb2]} />
 
       <SafeAreaView style={{ flex: 1 }}>
         {/* Header */}
         <View style={s.header}>
-          <View>
-            <AppText variant="h2">Schedule</AppText>
-            <AppText variant="caption">
-              Week of Jun 27 – Jul 4, 2026
+          <AppText variant="h2">Exam Schedule</AppText>
+          <AppText variant="caption">Your upcoming exams</AppText>
+        </View>
+
+        {loading ? (
+          <View style={s.centered}>
+            <ActivityIndicator size="large" color={COLORS.blueBright} />
+            <AppText variant="caption" style={{ marginTop: 10 }}>
+              Loading exams…
             </AppText>
           </View>
-
-          {/* Summary stats */}
-          <View style={s.statRow}>
-            <StatBadge count={upcoming} label="upcoming" color={COLORS.cyan} />
-            <StatBadge count={exams} label="exams" color={COLORS.gold} />
+        ) : fatalError ? (
+          <View style={s.centered}>
+            <AppText style={s.fatalIcon}>⚠️</AppText>
+            <AppText variant="body-sm" color={COLORS.red} style={s.fatalText}>
+              {fatalError}
+            </AppText>
+            <TouchableOpacity
+              style={s.retryBtn}
+              activeOpacity={0.78}
+              onPress={() => {
+                setLoading(true);
+                loadData().finally(() => setLoading(false));
+              }}
+            >
+              <AppText style={s.retryText}>Try Again</AppText>
+            </TouchableOpacity>
           </View>
-        </View>
+        ) : (
+          <>
+            {/* Stats */}
+            {allSlots.length > 0 && <StatsRow slots={allSlots} />}
 
-        {/* Filter pills */}
-        <View style={s.filterRow}>
-          {([
-            { key: 'all',   label: 'All Sessions' },
-            { key: 'class', label: 'Classes' },
-            { key: 'exam',  label: 'Exams' },
-          ] as { key: FilterKey; label: string }[]).map((f) => (
-            <FilterPill
-              key={f.key}
-              label={f.label}
-              active={filter === f.key}
-              onPress={() => setFilter(f.key)}
-            />
-          ))}
-        </View>
-
-        {/* Schedule list */}
-        <ScrollView
-          showsVerticalScrollIndicator={false}
-          contentContainerStyle={s.scroll}
-        >
-          {filteredGroups.map((group) => (
-            <View key={group.dateLabel} style={s.group}>
-              <GroupHeader dateLabel={group.dateLabel} date={group.date} />
-              <View style={s.groupItems}>
-                {group.items.map((item) => (
-                  <ScheduleCard key={item.id} item={item} />
-                ))}
+            {/* Partial error banner */}
+            {failCount > 0 && (
+              <View style={s.warnBanner}>
+                <AppText style={{ fontSize: 13 }}>⚠️</AppText>
+                <AppText variant="caption" color={COLORS.gold}>
+                  Could not load exams for {failCount} class{failCount > 1 ? 'es' : ''}
+                </AppText>
               </View>
-            </View>
-          ))}
+            )}
 
-          <View style={{ height: 32 }} />
-        </ScrollView>
+            <ScrollView
+              style={s.scroll}
+              contentContainerStyle={s.scrollContent}
+              refreshControl={
+                <RefreshControl
+                  refreshing={refreshing}
+                  onRefresh={onRefresh}
+                  tintColor={COLORS.blueBright}
+                  colors={[COLORS.blueBright]}
+                />
+              }
+              showsVerticalScrollIndicator={false}
+            >
+              {groups.length === 0 ? (
+                <View style={s.emptyState}>
+                  <AppText style={s.emptyIcon}>📋</AppText>
+                  <AppText variant="semi" color={COLORS.whiteSoft} style={{ marginBottom: 6 }}>
+                    No Exams Scheduled
+                  </AppText>
+                  <AppText
+                    variant="body-sm"
+                    color={COLORS.muted}
+                    style={{ textAlign: 'center' }}
+                  >
+                    You have no upcoming exams at this time.{'\n'}Pull down to refresh.
+                  </AppText>
+                </View>
+              ) : (
+                groups.map((group) => (
+                  <View key={group.label}>
+                    <DayHeader label={group.label} />
+                    {group.slots.map((slot) => (
+                      <ExamCard key={slot.id} slot={slot} />
+                    ))}
+                  </View>
+                ))
+              )}
+              <View style={{ height: 32 }} />
+            </ScrollView>
+          </>
+        )}
       </SafeAreaView>
     </View>
   );
 }
 
-// ── Styles ──────────────────────────────────────────────────────────────────────
+// ── Styles ────────────────────────────────────────────────────────────────────
+
 const s = StyleSheet.create({
   root: {
     flex: 1,
     backgroundColor: COLORS.navy,
   },
 
+  // Orbs
   orb: { position: 'absolute', borderRadius: RADIUS.full },
-  orb1: { width: 320, height: 320, top: -100, right: -80, backgroundColor: 'rgba(37,99,235,0.09)' },
-  orb2: { width: 220, height: 220, bottom: 80, left: -70, backgroundColor: 'rgba(6,182,212,0.07)' },
+  orb1: {
+    width: 280,
+    height: 280,
+    top: -60,
+    right: -60,
+    backgroundColor: 'rgba(37,99,235,0.09)',
+  },
+  orb2: {
+    width: 200,
+    height: 200,
+    bottom: 100,
+    left: -60,
+    backgroundColor: 'rgba(6,182,212,0.07)',
+  },
 
   // Header
   header: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
     paddingHorizontal: 20,
     paddingTop: 6,
     paddingBottom: 14,
-  },
-  statRow: {
-    flexDirection: 'row',
-    gap: 6,
-    marginTop: 2,
-  },
-  statBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: RADIUS.full,
-    borderWidth: 1,
-  },
-  statCount: {
-    fontFamily: FONTS.bodyBold,
-    fontSize: 13,
+    gap: 2,
   },
 
-  // Filter
-  filterRow: {
+  // Stats
+  statsRow: {
     flexDirection: 'row',
-    gap: 8,
     paddingHorizontal: 20,
-    marginBottom: 6,
-  },
-  filterPill: {
-    paddingHorizontal: 14,
-    paddingVertical: 7,
-    borderRadius: RADIUS.full,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    backgroundColor: COLORS.navyCard,
-  },
-  filterPillActive: {
-    backgroundColor: COLORS.blue,
-    borderColor: COLORS.blue,
-  },
-  filterPillText: {
-    fontSize: 13,
-    fontFamily: FONTS.bodySemi,
-  },
-
-  // Scroll
-  scroll: {
-    paddingHorizontal: 20,
-    paddingTop: 10,
-  },
-
-  // Group
-  group: {
-    marginBottom: 26,
-  },
-  groupHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  groupHeaderLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: COLORS.border,
-    marginLeft: 10,
-  },
-  groupItems: {
     gap: 10,
+    marginBottom: 14,
   },
-
-  // Card
-  card: {
+  statCard: {
+    flex: 1,
     backgroundColor: COLORS.navyCard,
     borderRadius: RADIUS.lg,
     borderWidth: 1,
     borderColor: COLORS.border,
-    borderLeftWidth: 3,
+    paddingTop: 14,
+    paddingBottom: 12,
+    paddingHorizontal: 10,
+    alignItems: 'center',
+    gap: 2,
+    overflow: 'hidden',
+  },
+  statAccentBar: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 2,
+    borderTopLeftRadius: RADIUS.lg,
+    borderTopRightRadius: RADIUS.lg,
+  },
+  statValue: {
+    fontFamily: FONTS.heading,
+    fontSize: 22,
+    color: COLORS.whiteSoft,
+    lineHeight: 28,
+  },
+
+  // Warn banner
+  warnBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginHorizontal: 20,
+    marginBottom: 10,
+    backgroundColor: 'rgba(245,158,11,0.10)',
+    borderRadius: RADIUS.sm,
+    borderWidth: 1,
+    borderColor: 'rgba(245,158,11,0.25)',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+
+  // Scroll
+  scroll: { flex: 1 },
+  scrollContent: { paddingHorizontal: 20 },
+
+  // Day header
+  dayHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 18,
+    marginBottom: 10,
+    gap: 10,
+  },
+  dayLabel: {
+    fontFamily: FONTS.bodySemi,
+    fontSize: 11,
+    letterSpacing: 1.2,
+  },
+  daySep: {
+    flex: 1,
+    height: 1,
+    backgroundColor: COLORS.border,
+  },
+
+  // Card
+  card: {
+    flexDirection: 'row',
+    backgroundColor: COLORS.navyCard,
+    borderRadius: RADIUS.lg,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    marginBottom: 10,
+    shadowColor: COLORS.blue,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.10,
+    shadowRadius: 10,
+    elevation: 3,
+  },
+  cardPast: {
+    opacity: 0.50,
+  },
+  cardAccent: {
+    width: 3,
+    borderTopLeftRadius: RADIUS.lg,
+    borderBottomLeftRadius: RADIUS.lg,
+  },
+  cardBody: {
+    flex: 1,
     paddingHorizontal: 14,
     paddingVertical: 13,
     gap: 5,
   },
-  cardRow: {
+  cardTopRow: {
     flexDirection: 'row',
-    alignItems: 'center',
     justifyContent: 'space-between',
+    alignItems: 'flex-start',
     gap: 8,
   },
-  cardSubject: {
+  examName: {
     flex: 1,
-    fontSize: 15,
+    fontSize: 14,
     lineHeight: 20,
   },
 
-  // Status badge
-  statusBadge: {
+  // Class chip
+  classChip: {
+    alignSelf: 'flex-start',
+    backgroundColor: COLORS.blueGlow,
+    borderRadius: RADIUS.xs,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  classChipText: {
+    fontFamily: FONTS.bodySemi,
+    fontSize: 10,
+    color: COLORS.blueBright,
+    letterSpacing: 0.3,
+  },
+
+  // Meta rows
+  metaRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 9,
+    gap: 6,
+  },
+  metaIcon: { fontSize: 12 },
+
+  // Badge
+  badge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: RADIUS.full,
+    borderWidth: 1,
+    gap: 4,
     flexShrink: 0,
   },
-  statusIcon: {
-    fontSize: 9,
-  },
-  statusLabel: {
+  badgeText: {
     fontFamily: FONTS.bodySemi,
-    fontSize: 11,
+    fontSize: 10,
+    letterSpacing: 0.3,
   },
   liveDot: {
-    width: 7,
-    height: 7,
+    width: 6,
+    height: 6,
     borderRadius: RADIUS.full,
     backgroundColor: COLORS.green,
   },
 
-  // Type badge
-  typeBadge: {
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-    borderRadius: RADIUS.xs,
+  // Loading / error
+  centered: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  fatalIcon: { fontSize: 40 },
+  fatalText: {
+    textAlign: 'center',
+    paddingHorizontal: 32,
+  },
+  retryBtn: {
+    marginTop: 6,
+    paddingHorizontal: 24,
+    paddingVertical: 10,
+    backgroundColor: 'rgba(37,99,235,0.14)',
+    borderRadius: RADIUS.full,
     borderWidth: 1,
-    flexShrink: 0,
+    borderColor: 'rgba(37,99,235,0.32)',
   },
-  typeBadgeText: {
+  retryText: {
     fontFamily: FONTS.bodySemi,
-    fontSize: 10,
-    letterSpacing: 0.4,
+    fontSize: 13,
+    color: COLORS.blueBright,
   },
+
+  // Empty state
+  emptyState: {
+    alignItems: 'center',
+    paddingTop: 72,
+    paddingHorizontal: 32,
+    gap: 6,
+  },
+  emptyIcon: { fontSize: 48, marginBottom: 8 },
 });
