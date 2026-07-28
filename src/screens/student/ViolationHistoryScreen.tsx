@@ -1,5 +1,6 @@
-import React, { useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import {
+  ActivityIndicator,
   View,
   ScrollView,
   TouchableOpacity,
@@ -12,120 +13,105 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { AppText } from '../../components/ui/AppText';
 import { Button } from '../../components/ui/Button';
 import { COLORS, FONTS, RADIUS } from '../../constants/theme';
+import { getStudentViolations, ViolationLog, BEViolationType, BEViolationSeverity } from '../../api/violations';
 
 // ── Types ───────────────────────────────────────────────────────────────────────
 type ViolationType =
   | 'Face Mismatch'
   | 'Multiple Faces'
-  | 'Phone Detected'
-  | 'Eyes Closed'
   | 'Looking Away'
-  | 'No Face Detected';
+  | 'No Face Detected'
+  | 'Head Turn'
+  | 'Face Obstructed'
+  | 'Tab Switch'
+  | 'Window Blur'
+  | 'Exit Fullscreen';
 
-type Severity = 'High' | 'Medium' | 'Low';
-type ReviewStatus = 'Pending Review' | 'Reviewed' | 'Dismissed';
+type Severity = 'High' | 'Medium';
+type ReviewStatus = 'Pending Review' | 'Reviewed';
 
 interface ViolationRecord {
   id: string;
   type: ViolationType;
   exam: string;
-  timestamp: string; // "Jun 27, 2026 · 09:47:15"
+  timestamp: string;
   severity: Severity;
   status: ReviewStatus;
   description: string;
   hasEvidence: boolean;
+  evidencePath: string | null;
 }
 
-// ── Mock data ───────────────────────────────────────────────────────────────────
-const MOCK_VIOLATIONS: ViolationRecord[] = [
-  {
-    id: '1',
-    type: 'Face Mismatch',
-    exam: 'Software Engineering Quiz 3',
-    timestamp: 'Jun 27, 2026 · 09:47:15',
-    severity: 'High',
-    status: 'Pending Review',
-    description: 'AI detected a significant difference between the live face and the registered biometric profile. Confidence score: 34%.',
-    hasEvidence: true,
-  },
-  {
-    id: '2',
-    type: 'Phone Detected',
-    exam: 'Database Systems Lab Assessment',
-    timestamp: 'Jun 25, 2026 · 14:23:08',
-    severity: 'Medium',
-    status: 'Reviewed',
-    description: 'A mobile phone was visible in the lower-right portion of the camera frame for approximately 12 seconds.',
-    hasEvidence: true,
-  },
-  {
-    id: '3',
-    type: 'Multiple Faces',
-    exam: 'Advanced Mathematics Test 2',
-    timestamp: 'Jun 24, 2026 · 08:51:44',
-    severity: 'High',
-    status: 'Dismissed',
-    description: 'A second face briefly appeared in the top-left corner of the camera. Dismissed after manual review — identified as a poster on the wall.',
-    hasEvidence: true,
-  },
-  {
-    id: '4',
-    type: 'Looking Away',
-    exam: 'Computer Networks Midterm',
-    timestamp: 'Jun 20, 2026 · 10:15:32',
-    severity: 'Low',
-    status: 'Reviewed',
-    description: 'Student gaze was directed away from the screen for a continuous 38-second period.',
-    hasEvidence: false,
-  },
-  {
-    id: '5',
-    type: 'Eyes Closed',
-    exam: 'Operating Systems Quiz 2',
-    timestamp: 'Jun 18, 2026 · 09:33:19',
-    severity: 'Medium',
-    status: 'Reviewed',
-    description: 'Eyes detected as closed for an abnormal duration (26 seconds). Possibly fatigued.',
-    hasEvidence: false,
-  },
-  {
-    id: '6',
-    type: 'No Face Detected',
-    exam: 'Software Engineering Midterm',
-    timestamp: 'Jun 15, 2026 · 11:02:45',
-    severity: 'High',
-    status: 'Reviewed',
-    description: 'No face was visible in the camera frame for over 2 minutes and 10 seconds. Student had stepped away from the desk.',
-    hasEvidence: true,
-  },
-];
+// ── BE → Display mapping ────────────────────────────────────────────────────────
+
+const VIOLATION_TYPE_MAP: Record<BEViolationType, { label: ViolationType; icon: string }> = {
+  Impersonation:  { label: 'Face Mismatch',    icon: '🎭' },
+  GazeDiversion:  { label: 'Looking Away',     icon: '👀' },
+  MultipleFaces:  { label: 'Multiple Faces',   icon: '👥' },
+  Absence:        { label: 'No Face Detected', icon: '❓' },
+  HeadTurn:       { label: 'Head Turn',        icon: '↩️' },
+  FaceObstructed: { label: 'Face Obstructed',  icon: '😷' },
+  TabSwitch:      { label: 'Tab Switch',       icon: '💻' },
+  WindowBlur:     { label: 'Window Blur',      icon: '💻' },
+  ExitFullscreen: { label: 'Exit Fullscreen',  icon: '💻' },
+};
+
+const SEVERITY_MAP: Record<BEViolationSeverity, Severity> = {
+  Warning: 'Medium',
+  Severe:  'High',
+};
+
+function toDisplay(log: ViolationLog): ViolationRecord {
+  const typeInfo = VIOLATION_TYPE_MAP[log.violationType] ?? { label: 'Face Mismatch' as ViolationType, icon: '⚠️' };
+  const d = new Date(log.recordedAt);
+  const timestamp = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    + ' · '
+    + d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+
+  const confLine = log.aiConfidence != null
+    ? ` AI confidence: ${Math.round(log.aiConfidence * 100)}%.`
+    : '';
+
+  return {
+    id:           log.id,
+    type:         typeInfo.label,
+    exam:         `Participation ${log.participationId.slice(0, 8)}`,
+    timestamp,
+    severity:     SEVERITY_MAP[log.severity] ?? 'Medium',
+    status:       log.isReviewed ? 'Reviewed' : 'Pending Review',
+    description:  `${typeInfo.label} violation detected by AI system.${confLine}`,
+    hasEvidence:  !!log.evidencePath,
+    evidencePath: log.evidencePath,
+  };
+}
 
 // ── Config ──────────────────────────────────────────────────────────────────────
 const SEV_CFG: Record<
   Severity,
   { color: string; bg: string; border: string; label: string }
 > = {
-  High:   { color: COLORS.red,       bg: 'rgba(239,68,68,0.12)',   border: 'rgba(239,68,68,0.30)',   label: 'HIGH'   },
-  Medium: { color: COLORS.gold,      bg: 'rgba(245,158,11,0.12)', border: 'rgba(245,158,11,0.30)', label: 'MEDIUM' },
-  Low:    { color: COLORS.cyan,      bg: 'rgba(6,182,212,0.12)',  border: 'rgba(6,182,212,0.30)',  label: 'LOW'    },
+  High:   { color: COLORS.red,  bg: 'rgba(239,68,68,0.12)',  border: 'rgba(239,68,68,0.30)',  label: 'HIGH'   },
+  Medium: { color: COLORS.gold, bg: 'rgba(245,158,11,0.12)', border: 'rgba(245,158,11,0.30)', label: 'MEDIUM' },
 };
 
 const TYPE_CFG: Record<ViolationType, { icon: string }> = {
   'Face Mismatch':    { icon: '🎭' },
   'Multiple Faces':   { icon: '👥' },
-  'Phone Detected':   { icon: '📱' },
-  'Eyes Closed':      { icon: '😴' },
   'Looking Away':     { icon: '👀' },
   'No Face Detected': { icon: '❓' },
+  'Head Turn':        { icon: '↩️' },
+  'Face Obstructed':  { icon: '😷' },
+  'Tab Switch':       { icon: '💻' },
+  'Window Blur':      { icon: '💻' },
+  'Exit Fullscreen':  { icon: '💻' },
 };
 
 const REVIEW_CFG: Record<
   ReviewStatus,
   { color: string; bg: string; border: string }
 > = {
-  'Pending Review': { color: COLORS.gold,  bg: 'rgba(245,158,11,0.12)', border: 'rgba(245,158,11,0.28)' },
-  'Reviewed':       { color: COLORS.cyan,  bg: 'rgba(6,182,212,0.12)',  border: 'rgba(6,182,212,0.28)'  },
-  'Dismissed':      { color: 'rgba(241,245,255,0.35)', bg: 'rgba(241,245,255,0.05)', border: 'rgba(241,245,255,0.10)' },
+  'Pending Review': { color: COLORS.gold, bg: 'rgba(245,158,11,0.12)', border: 'rgba(245,158,11,0.28)' },
+  'Reviewed':       { color: COLORS.cyan, bg: 'rgba(6,182,212,0.12)',  border: 'rgba(6,182,212,0.28)'  },
 };
 
 // ── Mock camera evidence snapshot ───────────────────────────────────────────────
@@ -387,15 +373,6 @@ function ViolationCard({
 }
 
 // ── Filter pill ─────────────────────────────────────────────────────────────────
-type FilterKey = 'all' | Severity;
-
-const FILTER_OPTIONS: { key: FilterKey; label: string; accentColor?: string }[] = [
-  { key: 'all',    label: 'All'    },
-  { key: 'High',   label: '🔴 High',   accentColor: COLORS.red  },
-  { key: 'Medium', label: '🟡 Medium', accentColor: COLORS.gold },
-  { key: 'Low',    label: '🔵 Low',    accentColor: COLORS.cyan },
-];
-
 function FilterPill({
   label,
   active,
@@ -431,86 +408,113 @@ function FilterPill({
   );
 }
 
+// ── Filter options ──────────────────────────────────────────────────────────────
+type FilterKey = 'all' | Severity;
+
+const FILTER_OPTIONS: { key: FilterKey; label: string; accentColor?: string }[] = [
+  { key: 'all',    label: 'All'        },
+  { key: 'High',   label: '🔴 High',   accentColor: COLORS.red  },
+  { key: 'Medium', label: '🟡 Medium', accentColor: COLORS.gold },
+];
+
 // ── Main screen ─────────────────────────────────────────────────────────────────
 export default function ViolationHistoryScreen({ embedded = false }: { embedded?: boolean }) {
-  const [filter, setFilter] = useState<FilterKey>('all');
-  const [selected, setSelected] = useState<ViolationRecord | null>(null);
+  const [violations, setViolations] = useState<ViolationRecord[]>([]);
+  const [loading, setLoading]       = useState(true);
+  const [error, setError]           = useState<string | null>(null);
+  const [filter, setFilter]         = useState<FilterKey>('all');
+  const [selected, setSelected]     = useState<ViolationRecord | null>(null);
+
+  const load = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const logs = await getStudentViolations();
+      setViolations(logs.map(toDisplay));
+    } catch (e: any) {
+      setError(e.message ?? 'Failed to load violations');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { load(); }, []);
 
   const filtered = useMemo(
-    () =>
-      filter === 'all'
-        ? MOCK_VIOLATIONS
-        : MOCK_VIOLATIONS.filter((v) => v.severity === filter),
-    [filter]
+    () => filter === 'all' ? violations : violations.filter((v) => v.severity === filter),
+    [filter, violations],
   );
 
-  const highCount    = MOCK_VIOLATIONS.filter((v) => v.severity === 'High').length;
-  const medCount     = MOCK_VIOLATIONS.filter((v) => v.severity === 'Medium').length;
-  const lowCount     = MOCK_VIOLATIONS.filter((v) => v.severity === 'Low').length;
-  const pendingCount = MOCK_VIOLATIONS.filter((v) => v.status === 'Pending Review').length;
+  const highCount    = violations.filter((v) => v.severity === 'High').length;
+  const medCount     = violations.filter((v) => v.severity === 'Medium').length;
+  const pendingCount = violations.filter((v) => v.status === 'Pending Review').length;
 
-  // Shared inner content (chips + filter + list + modal)
   const innerContent = (
     <>
-      {/* Severity summary chips */}
-      <View style={s.summaryRow}>
-        {[
-          { label: 'High',   count: highCount,  sev: SEV_CFG.High   },
-          { label: 'Medium', count: medCount,   sev: SEV_CFG.Medium },
-          { label: 'Low',    count: lowCount,   sev: SEV_CFG.Low    },
-        ].map((item) => (
-          <View
-            key={item.label}
-            style={[s.summaryChip, { backgroundColor: item.sev.bg, borderColor: item.sev.border }]}
-          >
-            <AppText style={[s.summaryChipCount, { color: item.sev.color }]}>
-              {item.count}
-            </AppText>
-            <AppText variant="caption" color={COLORS.muted}>
-              {item.label}
-            </AppText>
-          </View>
-        ))}
-      </View>
-
-      {/* Filter row */}
-      <View style={s.filterRow}>
-        {FILTER_OPTIONS.map((f) => (
-          <FilterPill
-            key={f.key}
-            label={f.label}
-            active={filter === f.key}
-            accentColor={f.accentColor}
-            onPress={() => setFilter(f.key)}
-          />
-        ))}
-      </View>
-
-      {/* List */}
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={s.scroll}>
-        <AppText
-          variant="caption"
-          color={COLORS.muted}
-          style={{ marginBottom: 10 }}
-        >
-          {filtered.length} {filtered.length === 1 ? 'violation' : 'violations'}
-        </AppText>
-
-        <View style={s.list}>
-          {filtered.map((item) => (
-            <ViolationCard
-              key={item.id}
-              item={item}
-              onPress={() => setSelected(item)}
-            />
-          ))}
+      {loading ? (
+        <View style={s.center}>
+          <ActivityIndicator size="large" color={COLORS.red} />
+          <AppText variant="caption" color={COLORS.muted} style={{ marginTop: 12 }}>Loading violations…</AppText>
         </View>
+      ) : error ? (
+        <View style={s.center}>
+          <AppText style={{ fontSize: 36, marginBottom: 12 }}>⚠️</AppText>
+          <AppText variant="semi" color={COLORS.whiteSoft} style={{ marginBottom: 6 }}>Failed to load</AppText>
+          <AppText variant="caption" color={COLORS.muted} style={{ textAlign: 'center', marginBottom: 20 }}>{error}</AppText>
+          <Button label="Retry" onPress={load} style={{ width: 140 }} />
+        </View>
+      ) : (
+        <>
+          {/* Severity summary chips */}
+          <View style={s.summaryRow}>
+            {[
+              { label: 'High',   count: highCount, sev: SEV_CFG.High   },
+              { label: 'Medium', count: medCount,  sev: SEV_CFG.Medium },
+            ].map((item) => (
+              <View key={item.label} style={[s.summaryChip, { backgroundColor: item.sev.bg, borderColor: item.sev.border }]}>
+                <AppText style={[s.summaryChipCount, { color: item.sev.color }]}>{item.count}</AppText>
+                <AppText variant="caption" color={COLORS.muted}>{item.label}</AppText>
+              </View>
+            ))}
+            <View style={[s.summaryChip, { backgroundColor: 'rgba(241,245,255,0.04)', borderColor: COLORS.border }]}>
+              <AppText style={[s.summaryChipCount, { color: COLORS.muted }]}>{violations.length}</AppText>
+              <AppText variant="caption" color={COLORS.muted}>Total</AppText>
+            </View>
+          </View>
 
-        <View style={{ height: 32 }} />
-      </ScrollView>
+          {/* Filter row */}
+          <View style={s.filterRow}>
+            {FILTER_OPTIONS.map((f) => (
+              <FilterPill key={f.key} label={f.label} active={filter === f.key} accentColor={f.accentColor} onPress={() => setFilter(f.key)} />
+            ))}
+          </View>
 
-      {/* Detail modal — React Native Modal is a portal; placement doesn't affect rendering */}
-      <ViolationDetailModal violation={selected} onClose={() => setSelected(null)} />
+          {/* List */}
+          <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={s.scroll}>
+            <AppText variant="caption" color={COLORS.muted} style={{ marginBottom: 10 }}>
+              {filtered.length} {filtered.length === 1 ? 'violation' : 'violations'}
+            </AppText>
+            {filtered.length === 0 ? (
+              <View style={s.empty}>
+                <AppText style={{ fontSize: 36, marginBottom: 10 }}>✅</AppText>
+                <AppText variant="semi" color={COLORS.whiteSoft}>No violations</AppText>
+                <AppText variant="caption" color={COLORS.muted} style={{ marginTop: 4, textAlign: 'center' }}>
+                  No AI-detected violations on record
+                </AppText>
+              </View>
+            ) : (
+              <View style={s.list}>
+                {filtered.map((item) => (
+                  <ViolationCard key={item.id} item={item} onPress={() => setSelected(item)} />
+                ))}
+              </View>
+            )}
+            <View style={{ height: 32 }} />
+          </ScrollView>
+
+          <ViolationDetailModal violation={selected} onClose={() => setSelected(null)} />
+        </>
+      )}
     </>
   );
 
@@ -521,17 +525,13 @@ export default function ViolationHistoryScreen({ embedded = false }: { embedded?
       <StatusBar style="light" />
       <View style={[s.orb, s.orb1]} />
       <View style={[s.orb, s.orb2]} />
-
       <SafeAreaView style={{ flex: 1 }}>
-        {/* Header */}
         <View style={s.header}>
           <View>
             <AppText variant="h2">Violations</AppText>
-            <AppText variant="caption">
-              AI-detected exam violations
-            </AppText>
+            <AppText variant="caption">AI-detected exam violations</AppText>
           </View>
-          {pendingCount > 0 && (
+          {!loading && pendingCount > 0 && (
             <View style={s.pendingBadge}>
               <AppText style={s.pendingBadgeText}>{pendingCount} pending</AppText>
             </View>
@@ -616,6 +616,9 @@ const s = StyleSheet.create({
     fontSize: 12,
     fontFamily: FONTS.bodySemi,
   },
+
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 32, paddingTop: 40 },
+  empty:  { alignItems: 'center', paddingHorizontal: 32, paddingTop: 40 },
 
   // Scroll + list
   scroll: { paddingHorizontal: 20 },

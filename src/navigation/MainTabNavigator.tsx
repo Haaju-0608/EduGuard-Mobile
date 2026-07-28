@@ -4,6 +4,8 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
 import type { MainTabParamList } from './types';
 import { COLORS } from '../constants/theme';
+import { useAuth } from './AuthContext';
+import { LecturerTabNavigator } from './LecturerTabNavigator';
 
 import ScheduleScreen from '../screens/student/ScheduleScreen';
 import NotificationsScreen from '../screens/student/NotificationsScreen';
@@ -25,6 +27,12 @@ const TAB_ICONS: Record<
 };
 
 export function MainTabNavigator() {
+  const { authState } = useAuth();
+
+  if (authState.user?.role === 'lecturer') {
+    return <LecturerTabNavigator />;
+  }
+
   return (
     <Tab.Navigator
       initialRouteName="Schedule"

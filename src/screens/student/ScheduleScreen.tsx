@@ -75,7 +75,7 @@ function groupByDay(slots: ExamSlotWithClass[]): DayGroup[] {
   const map = new Map<string, ExamSlotWithClass[]>();
 
   const sorted = [...slots].sort(
-    (a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime(),
+    (a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime(),
   );
 
   for (const slot of sorted) {

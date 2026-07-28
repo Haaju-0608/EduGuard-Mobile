@@ -30,6 +30,8 @@ export default function ProfileScreen() {
   const { authState, logout } = useAuth();
   const rootNav = useNavigation<RootNav>();
 
+  const isLecturer = authState.user?.role === 'lecturer';
+
   const user = authState.user ?? {
     name: 'Student User',
     studentId: '20229999',
@@ -62,7 +64,7 @@ export default function ProfileScreen() {
           <View style={s.avatarSection}>
             <View style={s.avatarWrap}>
               <LinearGradient
-                colors={[COLORS.blue, COLORS.cyan]}
+                colors={isLecturer ? [COLORS.cyan, COLORS.blue] : [COLORS.blue, COLORS.cyan]}
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 1 }}
                 style={s.avatarGradient}
@@ -74,8 +76,10 @@ export default function ProfileScreen() {
             <AppText variant="h3" style={s.userName}>
               {user.name}
             </AppText>
-            <View style={s.studentBadge}>
-              <AppText style={s.studentBadgeText}>🎓 Student</AppText>
+            <View style={[s.studentBadge, isLecturer && s.lecturerBadge]}>
+              <AppText style={[s.studentBadgeText, isLecturer && s.lecturerBadgeText]}>
+                {isLecturer ? '👨‍🏫 Lecturer' : '🎓 Student'}
+              </AppText>
             </View>
           </View>
 
@@ -88,52 +92,58 @@ export default function ProfileScreen() {
               style={s.cardAccentBar}
             />
             <AppText variant="label" style={{ marginBottom: 14, letterSpacing: 1 }}>
-              Student Information
+              {isLecturer ? 'Lecturer Information' : 'Student Information'}
             </AppText>
 
-            <InfoRow label="Full Name"   value={user.name}      />
+            <InfoRow label="Full Name" value={user.name} />
+            {!isLecturer && (
+              <>
+                <View style={s.divider} />
+                <InfoRow label="Student ID" value={user.studentId} />
+              </>
+            )}
             <View style={s.divider} />
-            <InfoRow label="Student ID"  value={user.studentId} />
-            <View style={s.divider} />
-            <InfoRow label="Email"       value={user.email}     />
+            <InfoRow label="Email" value={user.email} />
           </View>
 
-          {/* ── Biometrics card ── */}
-          <View style={s.bioCard}>
-            <View style={s.bioRow}>
-              <AppText style={s.bioIcon}>🛡</AppText>
-              <View style={{ flex: 1 }}>
-                <AppText variant="semi" color={COLORS.whiteSoft}>
-                  Biometric Face Profile
-                </AppText>
-                <AppText variant="caption" color={COLORS.muted} style={{ marginTop: 2 }}>
-                  Used for exam identity verification
-                </AppText>
+          {/* ── Biometrics card — students only ── */}
+          {!isLecturer && (
+            <View style={s.bioCard}>
+              <View style={s.bioRow}>
+                <AppText style={s.bioIcon}>🛡</AppText>
+                <View style={{ flex: 1 }}>
+                  <AppText variant="semi" color={COLORS.whiteSoft}>
+                    Biometric Face Profile
+                  </AppText>
+                  <AppText variant="caption" color={COLORS.muted} style={{ marginTop: 2 }}>
+                    Used for exam identity verification
+                  </AppText>
+                </View>
+                <View style={s.registeredBadge}>
+                  <AppText style={s.registeredBadgeText}>✓ Active</AppText>
+                </View>
               </View>
-              <View style={s.registeredBadge}>
-                <AppText style={s.registeredBadgeText}>✓ Active</AppText>
-              </View>
+
+              <View style={s.divider} />
+
+              <TouchableOpacity
+                activeOpacity={0.75}
+                onPress={() => rootNav.navigate('FaceReRegistration')}
+                style={s.reRegBtn}
+              >
+                <AppText style={s.reRegIcon}>🔄</AppText>
+                <View style={{ flex: 1 }}>
+                  <AppText variant="semi" color={COLORS.whiteSoft} style={{ fontSize: 13 }}>
+                    Request Face Re-registration
+                  </AppText>
+                  <AppText variant="caption" color={COLORS.muted} style={{ marginTop: 1 }}>
+                    Submit a request if your face is not being recognized
+                  </AppText>
+                </View>
+                <AppText style={s.chevron}>›</AppText>
+              </TouchableOpacity>
             </View>
-
-            <View style={s.divider} />
-
-            <TouchableOpacity
-              activeOpacity={0.75}
-              onPress={() => rootNav.navigate('FaceReRegistration')}
-              style={s.reRegBtn}
-            >
-              <AppText style={s.reRegIcon}>🔄</AppText>
-              <View style={{ flex: 1 }}>
-                <AppText variant="semi" color={COLORS.whiteSoft} style={{ fontSize: 13 }}>
-                  Request Face Re-registration
-                </AppText>
-                <AppText variant="caption" color={COLORS.muted} style={{ marginTop: 1 }}>
-                  Submit a request if your face is not being recognized
-                </AppText>
-              </View>
-              <AppText style={s.chevron}>›</AppText>
-            </TouchableOpacity>
-          </View>
+          )}
 
           {/* ── Log out ── */}
           <Button
@@ -213,6 +223,13 @@ const s = StyleSheet.create({
     fontFamily: FONTS.bodySemi,
     fontSize: 12,
     color: COLORS.blueBright,
+  },
+  lecturerBadge: {
+    backgroundColor: 'rgba(6,182,212,0.12)',
+    borderColor: 'rgba(6,182,212,0.30)',
+  },
+  lecturerBadgeText: {
+    color: COLORS.cyan,
   },
 
   // Info card

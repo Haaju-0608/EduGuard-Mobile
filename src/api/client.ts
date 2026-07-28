@@ -1,6 +1,7 @@
 export const BASE_URL = 'https://eduguard-api-gdhg.onrender.com';
 
 let _token: string | null = null;
+let _onAuthError: (() => void) | null = null;
 
 export function setAuthToken(token: string | null) {
   _token = token;
@@ -8,6 +9,14 @@ export function setAuthToken(token: string | null) {
 
 export function getAuthToken() {
   return _token;
+}
+
+export function setOnAuthError(cb: () => void) {
+  _onAuthError = cb;
+}
+
+function triggerAuthError() {
+  if (_onAuthError) _onAuthError();
 }
 
 interface ApiEnvelope<T> {
@@ -65,7 +74,20 @@ export async function uploadRequest<T>(path: string, formData: FormData): Promis
   };
 
   const res = await fetch(`${BASE_URL}${path}`, { method: 'POST', headers, body: formData });
-  const json: ApiEnvelope<T> = await res.json();
+  const rawText = await res.text();
+  console.log(`[upload] ${path} → ${res.status}`, rawText.slice(0, 500));
+
+  if (res.status === 401) {
+    triggerAuthError();
+    throw new Error('Session expired. Please sign in again.');
+  }
+
+  let json: ApiEnvelope<T>;
+  try {
+    json = JSON.parse(rawText);
+  } catch {
+    throw new Error(`Server error ${res.status}: ${rawText.slice(0, 200)}`);
+  }
 
   if (!json.success) {
     throw new Error(cleanErrorMessage(json, 'Upload failed'));
@@ -84,6 +106,12 @@ export async function apiRequest<T>(
   };
 
   const res = await fetch(`${BASE_URL}${path}`, { ...options, headers });
+
+  if (res.status === 401) {
+    triggerAuthError();
+    throw new Error('Session expired. Please sign in again.');
+  }
+
   const json: ApiEnvelope<T> = await res.json();
 
   if (!json.success) {

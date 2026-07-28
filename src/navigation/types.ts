@@ -7,10 +7,18 @@ export type MainStackParamList = {
   FaceReRegistration: undefined;
 };
 
+// Student bottom tabs
 export type MainTabParamList = {
   Schedule: undefined;
   Notifications: undefined;
   History: undefined;
+  Profile: undefined;
+};
+
+// Lecturer bottom tabs
+export type LecturerTabParamList = {
+  Attendance: undefined;
+  Notifications: undefined;
   Profile: undefined;
 };
 
@@ -19,3 +27,6 @@ export type MainStackScreenProps<T extends keyof MainStackParamList> =
 
 export type MainTabScreenProps<T extends keyof MainTabParamList> =
   BottomTabScreenProps<MainTabParamList, T>;
+
+export type LecturerTabScreenProps<T extends keyof LecturerTabParamList> =
+  BottomTabScreenProps<LecturerTabParamList, T>;
