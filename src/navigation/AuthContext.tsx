@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useState } from 'react';
 import * as SecureStore from 'expo-secure-store';
 import { loginApi, clearSession, loadSession } from '../api/auth';
 import { setAuthToken, setOnAuthError } from '../api/client';
+import { getMyBiometricRequests } from '../api/biometric';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -44,7 +45,12 @@ function faceKey(email: string) {
 async function isFaceRegistered(email: string): Promise<boolean> {
   try {
     const val = await SecureStore.getItemAsync(faceKey(email));
-    return val === 'true';
+    if (val !== null) return val === 'true';
+    // Fresh install: SecureStore empty → check from BE
+    const requests = await getMyBiometricRequests();
+    const registered = requests.some(r => r.status === 'Approved');
+    if (registered) await SecureStore.setItemAsync(faceKey(email), 'true');
+    return registered;
   } catch {
     return false;
   }
