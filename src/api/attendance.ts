@@ -54,10 +54,32 @@ export async function getClassEnrollments(classId: string): Promise<ClassEnrollm
   );
 }
 
-export async function openAttendanceSession(classId: string): Promise<AttendanceSession> {
+export interface ExamSlotBrief {
+  id: string;
+  examName: string;
+  startTime: string;
+  endTime: string;
+  status: 'Scheduled' | 'InProgress' | 'Completed' | 'Cancelled';
+}
+
+export async function getExamSlotsForClass(classId: string): Promise<ExamSlotBrief[]> {
+  const data = await apiRequest<ExamSlotBrief[] | { items?: ExamSlotBrief[] }>(
+    `/api/exam-slots/class/${classId}`,
+  );
+  return Array.isArray(data) ? data : (data as any).items ?? [];
+}
+
+export async function openAttendanceSession(
+  classId: string,
+  examSlotId?: string,
+): Promise<AttendanceSession> {
   return apiRequest<AttendanceSession>('/api/attendance-sessions', {
     method: 'POST',
-    body: JSON.stringify({ classId, startTime: new Date().toISOString() }),
+    body: JSON.stringify({
+      classId,
+      ...(examSlotId ? { examSlotId } : {}),
+      startTime: new Date().toISOString(),
+    }),
   });
 }
 

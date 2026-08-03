@@ -20,25 +20,27 @@ import {
   AttendanceRecord,
   AttendanceSession,
   ClassEnrollment,
+  ExamSlotBrief,
   createAttendanceRecord,
   getClassEnrollments,
+  getExamSlotsForClass,
   getLecturerClasses,
   openAttendanceSession,
   updateAttendanceRecord,
   uploadAttendanceVideo,
 } from '../../api/attendance';
-import { apiRequest } from '../../api/client';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Phase =
   | { tag: 'classes'; refreshing: boolean }
-  | { tag: 'detail'; cls: AttendanceClass; sessions: AttendanceSession[]; sessionsLoading: boolean; opening: boolean }
-  | { tag: 'video-pick'; cls: AttendanceClass; sessionId: string }
-  | { tag: 'uploading'; cls: AttendanceClass; sessionId: string }
+  | { tag: 'exams'; cls: AttendanceClass; exams: ExamSlotBrief[]; loading: boolean; error: string | null }
+  | { tag: 'video-pick'; cls: AttendanceClass; exam: ExamSlotBrief; sessionId: string }
+  | { tag: 'uploading'; cls: AttendanceClass; exam: ExamSlotBrief }
   | {
       tag: 'results';
       cls: AttendanceClass;
+      exam: ExamSlotBrief;
       sessionId: string;
       records: AttendanceRecord[];
       enrollments: ClassEnrollment[];
@@ -52,15 +54,20 @@ function fmtDate(iso: string | null) {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-function fmtSessionTime(iso: string) {
+function fmtTime(iso: string) {
+  return new Date(iso).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+function fmtExamDate(iso: string) {
   const d = new Date(iso);
-  const today    = new Date();
-  const sameDay  = (a: Date, b: Date) =>
+  const today = new Date();
+  const tomorrow = new Date(today);
+  tomorrow.setDate(today.getDate() + 1);
+  const sameDay = (a: Date, b: Date) =>
     a.getDate() === b.getDate() && a.getMonth() === b.getMonth() && a.getFullYear() === b.getFullYear();
-  const dayLabel = sameDay(d, today) ? 'Today'
-    : d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
-  const time = d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
-  return `${dayLabel}  ·  ${time}`;
+  if (sameDay(d, today)) return `Today · ${fmtTime(iso)}`;
+  if (sameDay(d, tomorrow)) return `Tomorrow · ${fmtTime(iso)}`;
+  return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) + ' · ' + fmtTime(iso);
 }
 
 function initials(name: string) {
@@ -83,26 +90,21 @@ function mergeResults(records: AttendanceRecord[], enrollments: ClassEnrollment[
     });
 }
 
-async function getPastSessions(classId: string): Promise<AttendanceSession[]> {
-  try {
-    return await apiRequest<AttendanceSession[]>(
-      `/api/attendance-sessions?classId=${classId}&pageSize=5&sort=startTime_desc`,
-    );
-  } catch {
-    return [];
-  }
-}
+// ── Exam status config ────────────────────────────────────────────────────────
+
+const EXAM_STATUS_CFG = {
+  Scheduled:  { color: COLORS.blueBright, bg: 'rgba(37,99,235,0.12)',  border: 'rgba(37,99,235,0.28)',  label: 'Scheduled',   icon: '🗓' },
+  InProgress: { color: COLORS.green,      bg: 'rgba(16,185,129,0.12)', border: 'rgba(16,185,129,0.28)', label: 'In Progress', icon: '🟢' },
+  Completed:  { color: COLORS.muted,      bg: 'rgba(241,245,255,0.06)', border: 'rgba(241,245,255,0.12)', label: 'Completed', icon: '✓'  },
+  Cancelled:  { color: COLORS.red,        bg: 'rgba(239,68,68,0.10)',  border: 'rgba(239,68,68,0.25)',  label: 'Cancelled',   icon: '✗'  },
+};
 
 // ── ClassCard ─────────────────────────────────────────────────────────────────
 
 function ClassCard({ cls, onPress }: { cls: AttendanceClass; onPress: () => void }) {
   return (
     <TouchableOpacity activeOpacity={0.75} onPress={onPress} style={s.classCard}>
-      <LinearGradient
-        colors={[COLORS.blue, COLORS.cyan]}
-        start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-        style={s.cardAccentBar}
-      />
+      <LinearGradient colors={[COLORS.blue, COLORS.cyan]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.accentBar} />
       <View style={s.classCardBody}>
         <View style={{ flex: 1 }}>
           <AppText variant="semi" color={COLORS.whiteSoft} numberOfLines={2} style={{ fontSize: 15 }}>
@@ -125,31 +127,39 @@ function ClassCard({ cls, onPress }: { cls: AttendanceClass; onPress: () => void
   );
 }
 
-// ── SessionHistoryRow ─────────────────────────────────────────────────────────
+// ── ExamCard ──────────────────────────────────────────────────────────────────
 
-const SESSION_STATUS_CFG = {
-  InProgress: { color: COLORS.green, bg: 'rgba(16,185,129,0.12)', border: 'rgba(16,185,129,0.28)', label: 'In Progress' },
-  Completed:  { color: COLORS.cyan,  bg: 'rgba(6,182,212,0.10)',  border: 'rgba(6,182,212,0.25)',  label: 'Completed'  },
-  Cancelled:  { color: COLORS.red,   bg: 'rgba(239,68,68,0.10)',  border: 'rgba(239,68,68,0.25)',  label: 'Cancelled'  },
-};
+function ExamCard({ exam, onPress }: { exam: ExamSlotBrief; onPress: () => void }) {
+  const sc = EXAM_STATUS_CFG[exam.status] ?? EXAM_STATUS_CFG.Scheduled;
+  const canAttend = exam.status === 'InProgress' || exam.status === 'Scheduled';
 
-function SessionHistoryRow({ session }: { session: AttendanceSession }) {
-  const sc = SESSION_STATUS_CFG[session.status] ?? SESSION_STATUS_CFG.Completed;
   return (
-    <View style={s.sessionRow}>
-      <View style={{ flex: 1 }}>
-        <AppText variant="semi" color={COLORS.whiteSoft} style={{ fontSize: 13 }}>
-          {fmtSessionTime(session.startTime)}
-        </AppText>
-        <AppText variant="caption" color={COLORS.muted} style={{ marginTop: 2 }}>
-          {session.totalRecognized} recognized
-          {session.endTime ? `  ·  ended ${fmtSessionTime(session.endTime)}` : ''}
-        </AppText>
+    <TouchableOpacity
+      activeOpacity={canAttend ? 0.75 : 1}
+      onPress={canAttend ? onPress : undefined}
+      style={[s.examCard, !canAttend && { opacity: 0.5 }]}
+    >
+      <View style={[s.examStatusStripe, { backgroundColor: sc.color }]} />
+      <View style={s.examCardBody}>
+        <View style={{ flex: 1 }}>
+          <AppText variant="semi" color={COLORS.whiteSoft} numberOfLines={1} style={{ fontSize: 14 }}>
+            {exam.examName}
+          </AppText>
+          <AppText variant="caption" color={COLORS.muted} style={{ marginTop: 4 }}>
+            📅  {fmtExamDate(exam.startTime)}
+          </AppText>
+          <AppText variant="caption" color="rgba(241,245,255,0.35)" style={{ marginTop: 2 }}>
+            ⏱  Until {fmtTime(exam.endTime)}
+          </AppText>
+        </View>
+        <View style={{ alignItems: 'flex-end', gap: 8 }}>
+          <View style={[s.examStatusChip, { backgroundColor: sc.bg, borderColor: sc.border }]}>
+            <AppText style={[s.examStatusText, { color: sc.color }]}>{sc.label}</AppText>
+          </View>
+          {canAttend && <AppText style={{ fontSize: 18, color: COLORS.muted }}>›</AppText>}
+        </View>
       </View>
-      <View style={[s.sessionStatusChip, { backgroundColor: sc.bg, borderColor: sc.border }]}>
-        <AppText style={[s.sessionStatusText, { color: sc.color }]}>{sc.label}</AppText>
-      </View>
-    </View>
+    </TouchableOpacity>
   );
 }
 
@@ -209,9 +219,9 @@ function StudentToggleRow({ row, toggling, onToggle }: {
 // ── Main screen ───────────────────────────────────────────────────────────────
 
 export default function AttendanceScreen() {
-  const [classes, setClasses]         = useState<AttendanceClass[]>([]);
+  const [classes, setClasses]           = useState<AttendanceClass[]>([]);
   const [classLoading, setClassLoading] = useState(true);
-  const [classError, setClassError]   = useState<string | null>(null);
+  const [classError, setClassError]     = useState<string | null>(null);
   const [phase, setPhase] = useState<Phase>({ tag: 'classes', refreshing: false });
 
   const loadClasses = useCallback(async (silent = false) => {
@@ -229,30 +239,50 @@ export default function AttendanceScreen() {
 
   useEffect(() => { loadClasses(); }, [loadClasses]);
 
-  // ── Select class → load past sessions ─────────────────────────────────────
+  // ── Select class → load exam slots ────────────────────────────────────────
 
   const handleSelectClass = async (cls: AttendanceClass) => {
-    setPhase({ tag: 'detail', cls, sessions: [], sessionsLoading: true, opening: false });
-    const sessions = await getPastSessions(cls.id);
-    setPhase({ tag: 'detail', cls, sessions, sessionsLoading: false, opening: false });
+    setPhase({ tag: 'exams', cls, exams: [], loading: true, error: null });
+    try {
+      const raw = await getExamSlotsForClass(cls.id);
+      const exams = [...raw].sort(
+        (a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime(),
+      );
+      setPhase({ tag: 'exams', cls, exams, loading: false, error: null });
+    } catch (e: any) {
+      setPhase({ tag: 'exams', cls, exams: [], loading: false, error: e.message ?? 'Failed to load exams' });
+    }
   };
 
-  // ── Open session ───────────────────────────────────────────────────────────
+  // ── Select exam → open session ─────────────────────────────────────────────
 
-  const handleOpenSession = async (cls: AttendanceClass, sessions: AttendanceSession[]) => {
-    setPhase({ tag: 'detail', cls, sessions, sessionsLoading: false, opening: true });
-    try {
-      const session = await openAttendanceSession(cls.id);
-      setPhase({ tag: 'video-pick', cls, sessionId: session.id });
-    } catch (e: any) {
-      Alert.alert('Failed to Open Session', e.message ?? 'Please try again.');
-      setPhase({ tag: 'detail', cls, sessions, sessionsLoading: false, opening: false });
-    }
+  const handleSelectExam = async (cls: AttendanceClass, exam: ExamSlotBrief) => {
+    Alert.alert(
+      'Start Attendance',
+      `Start attendance for "${exam.examName}"?\n\nYou will then select a video to upload.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Start', onPress: async () => {
+            setPhase({ tag: 'uploading', cls, exam });
+            try {
+              const session = await openAttendanceSession(cls.id, exam.id);
+              setPhase({ tag: 'video-pick', cls, exam, sessionId: session.id });
+            } catch (e: any) {
+              Alert.alert('Failed to Open Session', e.message ?? 'Please try again.');
+              setPhase({ tag: 'exams', cls, exams: [], loading: true, error: null });
+              const exams = await getExamSlotsForClass(cls.id).catch(() => []);
+              setPhase({ tag: 'exams', cls, exams, loading: false, error: null });
+            }
+          },
+        },
+      ],
+    );
   };
 
   // ── Pick & upload video ────────────────────────────────────────────────────
 
-  const handlePickVideo = async (cls: AttendanceClass, sessionId: string) => {
+  const handlePickVideo = async (cls: AttendanceClass, exam: ExamSlotBrief, sessionId: string) => {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!perm.granted) {
       Alert.alert('Permission Required', 'Please allow access to your media library.');
@@ -265,16 +295,16 @@ export default function AttendanceScreen() {
     });
     if (result.canceled) return;
 
-    setPhase({ tag: 'uploading', cls, sessionId });
+    setPhase({ tag: 'uploading', cls, exam });
     try {
       const [aiRecords, enrollments] = await Promise.all([
         uploadAttendanceVideo(sessionId, result.assets[0].uri),
         getClassEnrollments(cls.id),
       ]);
-      setPhase({ tag: 'results', cls, sessionId, records: aiRecords, enrollments, toggling: null });
+      setPhase({ tag: 'results', cls, exam, sessionId, records: aiRecords, enrollments, toggling: null });
     } catch (e: any) {
       Alert.alert('Upload Failed', e.message ?? 'Please try again.', [
-        { text: 'Retry', onPress: () => setPhase({ tag: 'video-pick', cls, sessionId }) },
+        { text: 'Retry', onPress: () => setPhase({ tag: 'video-pick', cls, exam, sessionId }) },
         { text: 'Back',  onPress: () => setPhase({ tag: 'classes', refreshing: false }) },
       ]);
     }
@@ -284,7 +314,7 @@ export default function AttendanceScreen() {
 
   const handleToggle = async (row: StudentRow) => {
     if (phase.tag !== 'results') return;
-    const { cls, sessionId, records, enrollments } = phase;
+    const { cls, exam, sessionId, records, enrollments } = phase;
     setPhase({ ...phase, toggling: row.studentId });
     const newStatus = row.record?.status === 'Present' ? 'Absent' : 'Present';
     try {
@@ -295,7 +325,7 @@ export default function AttendanceScreen() {
       const newRecords = idx >= 0
         ? records.map((r, i) => (i === idx ? updated : r))
         : [...records, updated];
-      setPhase({ tag: 'results', cls, sessionId, records: newRecords, enrollments, toggling: null });
+      setPhase({ tag: 'results', cls, exam, sessionId, records: newRecords, enrollments, toggling: null });
     } catch (e: any) {
       Alert.alert('Update Failed', e.message ?? 'Could not update attendance.');
       setPhase({ ...phase, toggling: null });
@@ -305,12 +335,14 @@ export default function AttendanceScreen() {
   // ── Back ───────────────────────────────────────────────────────────────────
 
   const goBack = () => {
-    if (phase.tag === 'detail' || phase.tag === 'results') {
+    if (phase.tag === 'exams') {
+      setPhase({ tag: 'classes', refreshing: false });
+    } else if (phase.tag === 'results') {
       setPhase({ tag: 'classes', refreshing: false });
     } else if (phase.tag === 'video-pick') {
       Alert.alert(
-        'Cancel Session?',
-        'The session will remain open. Leaving means attendance is not completed.',
+        'Cancel?',
+        'The session will remain open. Leave without completing attendance?',
         [
           { text: 'Stay', style: 'cancel' },
           { text: 'Leave', style: 'destructive', onPress: () => setPhase({ tag: 'classes', refreshing: false }) },
@@ -326,21 +358,19 @@ export default function AttendanceScreen() {
       <StatusBar style="light" />
       <View style={[s.orb, s.orb1]} />
       <View style={[s.orb, s.orb2]} />
-      <SafeAreaView style={{ flex: 1 }}>
-        {renderPhase()}
-      </SafeAreaView>
+      <SafeAreaView style={{ flex: 1 }}>{renderPhase()}</SafeAreaView>
     </View>
   );
 
   function renderPhase() {
 
-    // ── Phase 1: Class list ────────────────────────────────────────────────
+    // ── Phase 1: Class list ──────────────────────────────────────────────────
     if (phase.tag === 'classes') {
       return (
         <>
           <View style={s.header}>
             <AppText variant="h2" style={{ color: COLORS.whiteSoft }}>Attendance</AppText>
-            <AppText variant="caption" color={COLORS.muted}>Select a class to take attendance</AppText>
+            <AppText variant="caption" color={COLORS.muted}>Select a class to view exam slots</AppText>
           </View>
 
           {classLoading ? (
@@ -382,9 +412,9 @@ export default function AttendanceScreen() {
       );
     }
 
-    // ── Phase 2: Class detail + past sessions ──────────────────────────────
-    if (phase.tag === 'detail') {
-      const { cls, sessions, sessionsLoading, opening } = phase;
+    // ── Phase 2: Exam list ───────────────────────────────────────────────────
+    if (phase.tag === 'exams') {
+      const { cls, exams, loading, error } = phase;
       return (
         <>
           <View style={s.backRow}>
@@ -395,86 +425,60 @@ export default function AttendanceScreen() {
           </View>
 
           <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={s.scroll}>
-            {/* Class info */}
-            <View style={s.infoCard}>
-              <LinearGradient
-                colors={[COLORS.blue, COLORS.cyan]}
-                start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-                style={s.cardAccentBar}
-              />
-              <AppText variant="label" color={COLORS.muted} style={{ letterSpacing: 1, marginBottom: 8 }}>CLASS</AppText>
-              <AppText variant="h3" color={COLORS.whiteSoft} style={{ marginBottom: 10 }}>{cls.courseName}</AppText>
-              <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
-                {cls.courseCode && (
-                  <View style={s.metaChip}><AppText style={s.metaChipText}>{cls.courseCode}</AppText></View>
-                )}
-                {cls.semester && (
-                  <View style={s.metaChip}><AppText style={s.metaChipText}>{cls.semester}</AppText></View>
-                )}
-                {cls.academicYear && (
-                  <View style={s.metaChip}><AppText style={s.metaChipText}>{cls.academicYear}</AppText></View>
-                )}
+            {/* Class info strip */}
+            <View style={s.classInfoStrip}>
+              <LinearGradient colors={[COLORS.blue, COLORS.cyan]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.accentBar} />
+              <AppText variant="semi" color={COLORS.whiteSoft} numberOfLines={1}>{cls.courseName}</AppText>
+              <AppText variant="caption" color={COLORS.muted}>
+                {cls.courseCode}{cls.semester ? `  ·  ${cls.semester}` : ''}
+              </AppText>
+            </View>
+
+            <AppText variant="label" color={COLORS.muted} style={{ letterSpacing: 1, marginBottom: 10 }}>
+              EXAM SLOTS
+            </AppText>
+
+            {loading ? (
+              <View style={{ paddingVertical: 48, alignItems: 'center' }}>
+                <ActivityIndicator size="large" color={COLORS.cyan} />
+                <AppText variant="caption" color={COLORS.muted} style={{ marginTop: 12 }}>Loading exam slots…</AppText>
               </View>
-              {(cls.startDate || cls.endDate) && (
-                <AppText variant="caption" color="rgba(241,245,255,0.35)">
-                  📅 {fmtDate(cls.startDate)} — {fmtDate(cls.endDate)}
+            ) : error ? (
+              <View style={s.errorCard}>
+                <AppText style={{ fontSize: 32, marginBottom: 10 }}>⚠️</AppText>
+                <AppText variant="semi" color={COLORS.whiteSoft} style={{ marginBottom: 6 }}>Could not load exams</AppText>
+                <AppText variant="caption" color={COLORS.muted} style={{ textAlign: 'center', marginBottom: 16, lineHeight: 19 }}>
+                  {error}
                 </AppText>
-              )}
-            </View>
-
-            {/* Past sessions */}
-            <View style={s.sessionsCard}>
-              <AppText variant="label" color={COLORS.muted} style={{ letterSpacing: 1, marginBottom: 10 }}>
-                RECENT SESSIONS
-              </AppText>
-              {sessionsLoading ? (
-                <ActivityIndicator size="small" color={COLORS.cyan} style={{ alignSelf: 'flex-start', marginLeft: 4 }} />
-              ) : sessions.length === 0 ? (
-                <AppText variant="caption" color="rgba(241,245,255,0.35)">No sessions yet</AppText>
-              ) : (
-                sessions.map((session, i) => (
-                  <React.Fragment key={session.id}>
-                    {i > 0 && <View style={s.thinDivider} />}
-                    <SessionHistoryRow session={session} />
-                  </React.Fragment>
-                ))
-              )}
-            </View>
-
-            {/* How it works */}
-            <View style={s.instructCard}>
-              <AppText variant="semi" color={COLORS.whiteSoft} style={{ marginBottom: 10, fontSize: 14 }}>
-                How attendance works
-              </AppText>
-              {[
-                'Start an attendance session for this class',
-                'Record or pick a 5–10 second video of the room',
-                'AI scans every 0.5s and identifies faces',
-                'Review the results and adjust manually if needed',
-              ].map((text, i) => (
-                <View key={i} style={s.instructRow}>
-                  <View style={s.stepDot}>
-                    <AppText style={s.stepNum}>{i + 1}</AppText>
-                  </View>
-                  <AppText variant="caption" color="rgba(241,245,255,0.65)" style={{ flex: 1 }}>{text}</AppText>
-                </View>
-              ))}
-            </View>
-
-            <Button
-              label={opening ? 'Opening Session…' : 'Start Attendance Session'}
-              onPress={() => !opening && handleOpenSession(cls, sessions)}
-              style={{ width: '100%', opacity: opening ? 0.6 : 1 }}
-            />
+                <Button label="Retry" onPress={() => handleSelectClass(cls)} style={{ width: 140 }} />
+              </View>
+            ) : exams.length === 0 ? (
+              <View style={s.emptyCard}>
+                <AppText style={{ fontSize: 36, marginBottom: 10 }}>📭</AppText>
+                <AppText variant="semi" color={COLORS.whiteSoft} style={{ marginBottom: 4 }}>No exam slots</AppText>
+                <AppText variant="caption" color={COLORS.muted} style={{ textAlign: 'center' }}>
+                  No exam slots have been created for this class yet.
+                </AppText>
+              </View>
+            ) : (
+              <>
+                <AppText variant="caption" color={COLORS.muted} style={{ marginBottom: 12 }}>
+                  Tap an active exam to start attendance
+                </AppText>
+                {exams.map((exam) => (
+                  <ExamCard key={exam.id} exam={exam} onPress={() => handleSelectExam(cls, exam)} />
+                ))}
+              </>
+            )}
             <View style={{ height: 32 }} />
           </ScrollView>
         </>
       );
     }
 
-    // ── Phase 3: Video pick ────────────────────────────────────────────────
+    // ── Phase 3: Video pick ──────────────────────────────────────────────────
     if (phase.tag === 'video-pick') {
-      const { cls, sessionId } = phase;
+      const { cls, exam, sessionId } = phase;
       return (
         <>
           <View style={s.backRow}>
@@ -489,8 +493,15 @@ export default function AttendanceScreen() {
           </View>
 
           <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={s.scroll}>
-            <AppText variant="h3" color={COLORS.whiteSoft} style={{ marginBottom: 2 }}>{cls.courseName}</AppText>
-            <AppText variant="caption" color={COLORS.muted} style={{ marginBottom: 24 }}>{cls.courseCode}</AppText>
+            {/* Exam context */}
+            <View style={s.examContextCard}>
+              <LinearGradient colors={[COLORS.blue, COLORS.cyan]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.accentBar} />
+              <AppText variant="caption" color={COLORS.muted} style={{ marginBottom: 4 }}>Taking attendance for</AppText>
+              <AppText variant="h3" color={COLORS.whiteSoft} numberOfLines={2}>{exam.examName}</AppText>
+              <AppText variant="caption" color={COLORS.muted} style={{ marginTop: 4 }}>
+                {cls.courseName}  ·  {fmtExamDate(exam.startTime)}
+              </AppText>
+            </View>
 
             <View style={s.cameraIllustration}>
               <View style={s.cameraOrb} />
@@ -505,27 +516,40 @@ export default function AttendanceScreen() {
 
             <View style={s.tipsCard}>
               <AppText variant="label" color={COLORS.muted} style={{ letterSpacing: 1, marginBottom: 8 }}>TIPS</AppText>
-              {['📷  Keep camera steady while panning', '💡  Ensure good lighting', '👤  Faces should be clearly visible', '⏱  5–10 seconds is ideal'].map((tip, i) => (
+              {[
+                '📷  Keep camera steady while panning',
+                '💡  Ensure good lighting',
+                '👤  Faces should be clearly visible',
+                '⏱  5–10 seconds is ideal',
+              ].map((tip, i) => (
                 <AppText key={i} variant="caption" color="rgba(241,245,255,0.55)" style={{ marginTop: 5 }}>{tip}</AppText>
               ))}
             </View>
 
-            <Button label="Select Video from Gallery" onPress={() => handlePickVideo(cls, sessionId)} style={{ width: '100%' }} />
+            <Button
+              label="Select Video from Gallery"
+              onPress={() => handlePickVideo(cls, exam, sessionId)}
+              style={{ width: '100%' }}
+            />
             <View style={{ height: 32 }} />
           </ScrollView>
         </>
       );
     }
 
-    // ── Phase 4: Uploading ─────────────────────────────────────────────────
+    // ── Phase 4: Uploading / processing ─────────────────────────────────────
     if (phase.tag === 'uploading') {
+      const { exam } = phase;
       return (
         <View style={s.center}>
           <View style={s.uploadingOrbWrap}>
             <View style={s.uploadingOrb} />
             <AppText style={{ fontSize: 48, zIndex: 1 }}>🤖</AppText>
           </View>
-          <AppText variant="h3" color={COLORS.whiteSoft} style={{ marginTop: 24, marginBottom: 8 }}>AI Processing</AppText>
+          <AppText variant="h3" color={COLORS.whiteSoft} style={{ marginTop: 24, marginBottom: 4 }}>AI Processing</AppText>
+          <AppText variant="caption" color={COLORS.muted} style={{ textAlign: 'center', marginBottom: 6 }}>
+            {exam.examName}
+          </AppText>
           <AppText variant="caption" color={COLORS.muted} style={{ textAlign: 'center', marginBottom: 24 }}>
             Scanning faces every 0.5 seconds…{'\n'}This may take a moment.
           </AppText>
@@ -535,9 +559,9 @@ export default function AttendanceScreen() {
       );
     }
 
-    // ── Phase 5: Results ───────────────────────────────────────────────────
+    // ── Phase 5: Results ─────────────────────────────────────────────────────
     if (phase.tag === 'results') {
-      const { cls, records, enrollments, toggling } = phase;
+      const { cls, exam, records, enrollments, toggling } = phase;
       const rows = mergeResults(records, enrollments);
       const presentCount = rows.filter((r) => r.record?.status === 'Present').length;
       const absentCount  = rows.length - presentCount;
@@ -556,16 +580,12 @@ export default function AttendanceScreen() {
 
           <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={s.scroll}>
             <View style={s.statsCard}>
-              <LinearGradient
-                colors={[COLORS.green, COLORS.cyan]}
-                start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
-                style={s.cardAccentBar}
-              />
+              <LinearGradient colors={[COLORS.green, COLORS.cyan]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.accentBar} />
               <AppText variant="label" color={COLORS.muted} style={{ letterSpacing: 1, marginBottom: 2 }}>
-                {cls.courseName}
+                {exam.examName}
               </AppText>
               <AppText variant="caption" color="rgba(241,245,255,0.35)" style={{ marginBottom: 14 }}>
-                {cls.courseCode}  ·  {fmtSessionTime(new Date().toISOString())}
+                {cls.courseName}  ·  {fmtExamDate(exam.startTime)}
               </AppText>
               <View style={s.statsRow}>
                 <View style={s.statItem}>
@@ -616,55 +636,61 @@ const s = StyleSheet.create({
   orb1: { width: 300, height: 300, top: -80,  right: -80, backgroundColor: 'rgba(37,99,235,0.08)'  },
   orb2: { width: 220, height: 220, bottom: 80, left: -70,  backgroundColor: 'rgba(6,182,212,0.06)' },
 
-  header:  { paddingHorizontal: 20, paddingTop: 6, paddingBottom: 14, gap: 3 },
-  center:  { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 32 },
-  scroll:  { paddingHorizontal: 20, paddingTop: 8 },
+  header: { paddingHorizontal: 20, paddingTop: 6, paddingBottom: 14, gap: 3 },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 32 },
+  scroll: { paddingHorizontal: 20, paddingTop: 8 },
 
   backRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 4, paddingBottom: 8 },
   backBtn: { flexDirection: 'row', alignItems: 'center', gap: 2, paddingVertical: 6, paddingRight: 10 },
   backIcon:{ fontSize: 26, color: COLORS.blueBright, lineHeight: 28 },
 
-  cardAccentBar: { height: 3 },
+  accentBar: { position: 'absolute', top: 0, left: 0, right: 0, height: 3 },
 
+  // Class card
   classCard: {
     backgroundColor: COLORS.navyCard, borderRadius: RADIUS.xl, borderWidth: 1,
     borderColor: COLORS.border, marginBottom: 10, overflow: 'hidden',
-    elevation: 3, shadowColor: COLORS.blue, shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08, shadowRadius: 10,
   },
   classCardBody: { flexDirection: 'row', alignItems: 'center', padding: 16, paddingTop: 18, gap: 10 },
 
-  infoCard: {
-    backgroundColor: COLORS.navyCard, borderRadius: RADIUS['2xl'], borderWidth: 1,
-    borderColor: COLORS.border, padding: 18, paddingTop: 22, marginBottom: 14, overflow: 'hidden',
-  },
-  metaChip: {
-    backgroundColor: 'rgba(37,99,235,0.12)', borderRadius: RADIUS.full,
-    borderWidth: 1, borderColor: 'rgba(37,99,235,0.25)', paddingHorizontal: 11, paddingVertical: 4,
-  },
-  metaChipText: { fontFamily: FONTS.bodySemi, fontSize: 11, color: COLORS.blueBright },
-
-  sessionsCard: {
+  // Class info strip (in exams phase)
+  classInfoStrip: {
     backgroundColor: COLORS.navyCard, borderRadius: RADIUS.xl, borderWidth: 1,
-    borderColor: COLORS.border, padding: 16, marginBottom: 14,
+    borderColor: COLORS.border, padding: 14, paddingTop: 18, marginBottom: 20, overflow: 'hidden', gap: 3,
   },
-  sessionRow:        { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, gap: 10 },
-  sessionStatusChip: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: RADIUS.full, borderWidth: 1 },
-  sessionStatusText: { fontFamily: FONTS.bodySemi, fontSize: 10 },
-  thinDivider:       { height: 1, backgroundColor: COLORS.border },
 
-  instructCard: {
+  // Exam card
+  examCard: {
+    backgroundColor: COLORS.navyCard, borderRadius: RADIUS.xl, borderWidth: 1,
+    borderColor: COLORS.border, marginBottom: 10, flexDirection: 'row', overflow: 'hidden',
+  },
+  examStatusStripe: { width: 4, flexShrink: 0 },
+  examCardBody: { flex: 1, flexDirection: 'row', alignItems: 'center', padding: 14, gap: 10 },
+  examStatusChip: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: RADIUS.full, borderWidth: 1 },
+  examStatusText: { fontFamily: FONTS.bodySemi, fontSize: 10 },
+
+  // Error / empty states
+  errorCard: { alignItems: 'center', paddingVertical: 32, paddingHorizontal: 16 },
+  emptyCard: { alignItems: 'center', paddingVertical: 32 },
+
+  // Video pick phase
+  examContextCard: {
+    backgroundColor: COLORS.navyCard, borderRadius: RADIUS.xl, borderWidth: 1,
+    borderColor: COLORS.border, padding: 16, paddingTop: 20, marginBottom: 20, overflow: 'hidden',
+  },
+  cameraIllustration: {
+    alignItems: 'center', paddingVertical: 28, marginBottom: 20,
+    backgroundColor: COLORS.navyCard, borderRadius: RADIUS['2xl'],
+    borderWidth: 1, borderColor: COLORS.border, overflow: 'hidden',
+  },
+  cameraOrb:  { position: 'absolute', width: 160, height: 160, borderRadius: 80, backgroundColor: 'rgba(37,99,235,0.08)' },
+  cameraIcon: { fontSize: 56, zIndex: 1 },
+  tipsCard: {
     backgroundColor: COLORS.navyCard, borderRadius: RADIUS.xl, borderWidth: 1,
     borderColor: COLORS.border, padding: 16, marginBottom: 20,
   },
-  instructRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, marginBottom: 8 },
-  stepDot: {
-    width: 22, height: 22, borderRadius: 11, backgroundColor: 'rgba(37,99,235,0.18)',
-    borderWidth: 1, borderColor: 'rgba(37,99,235,0.35)',
-    alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 1,
-  },
-  stepNum: { fontFamily: FONTS.bodySemi, fontSize: 11, color: COLORS.blueBright },
 
+  // Chips
   inProgressChip: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
     backgroundColor: 'rgba(16,185,129,0.12)', borderRadius: RADIUS.full,
@@ -678,25 +704,14 @@ const s = StyleSheet.create({
   },
   completedText: { fontFamily: FONTS.bodySemi, fontSize: 11, color: COLORS.cyan },
 
-  cameraIllustration: {
-    alignItems: 'center', paddingVertical: 28, marginBottom: 20,
-    backgroundColor: COLORS.navyCard, borderRadius: RADIUS['2xl'],
-    borderWidth: 1, borderColor: COLORS.border, overflow: 'hidden',
-  },
-  cameraOrb:  { position: 'absolute', width: 160, height: 160, borderRadius: 80, backgroundColor: 'rgba(37,99,235,0.08)' },
-  cameraIcon: { fontSize: 56, zIndex: 1 },
-
-  tipsCard: {
-    backgroundColor: COLORS.navyCard, borderRadius: RADIUS.xl, borderWidth: 1,
-    borderColor: COLORS.border, padding: 16, marginBottom: 20,
-  },
-
+  // Uploading
   uploadingOrbWrap: { width: 120, height: 120, alignItems: 'center', justifyContent: 'center' },
   uploadingOrb: {
     position: 'absolute', width: 120, height: 120, borderRadius: 60,
     backgroundColor: 'rgba(37,99,235,0.12)', borderWidth: 1, borderColor: 'rgba(37,99,235,0.22)',
   },
 
+  // Results
   statsCard: {
     backgroundColor: COLORS.navyCard, borderRadius: RADIUS['2xl'], borderWidth: 1,
     borderColor: COLORS.border, padding: 18, paddingTop: 22, marginBottom: 14, overflow: 'hidden',

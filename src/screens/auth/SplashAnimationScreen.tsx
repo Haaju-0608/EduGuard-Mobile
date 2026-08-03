@@ -96,21 +96,23 @@ const s = StyleSheet.create({
   shieldShadow: {
     borderRadius: RADIUS['2xl'],
     shadowColor: '#2563EB',
-    shadowOffset: { width: 0, height: 14 },
-    shadowOpacity: 0.55,
-    shadowRadius: 28,
+    shadowOffset: { width: 0, height: 16 },
+    shadowOpacity: 0.5,
+    shadowRadius: 32,
     elevation: 20,
-    marginBottom: 22,
+    marginBottom: 24,
   },
   shieldGradient: {
-    width: 100,
-    height: 100,
+    width: 120,
+    height: 120,
     borderRadius: RADIUS['2xl'],
     alignItems: 'center',
     justifyContent: 'center',
   },
   shieldEmoji: {
     fontSize: 52,
+    lineHeight: 64,
+    includeFontPadding: false,
   },
 
   appName: {

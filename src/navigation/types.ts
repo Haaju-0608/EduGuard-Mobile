@@ -18,6 +18,7 @@ export type MainTabParamList = {
 // Lecturer bottom tabs
 export type LecturerTabParamList = {
   Attendance: undefined;
+  Schedule:   undefined;
   Notifications: undefined;
   Profile: undefined;
 };

@@ -90,7 +90,8 @@ export async function uploadRequest<T>(path: string, formData: FormData): Promis
   }
 
   if (!json.success) {
-    throw new Error(cleanErrorMessage(json, 'Upload failed'));
+    const msg = cleanErrorMessage(json, '');
+    throw new Error(msg || `Upload failed (${res.status}): ${rawText.slice(0, 300)}`);
   }
   return json.data as T;
 }
