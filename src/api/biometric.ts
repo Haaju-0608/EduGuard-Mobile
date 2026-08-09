@@ -19,10 +19,10 @@ export async function submitBiometricRegistration(
   reason = 'Initial face registration',
 ): Promise<void> {
   const formData = new FormData();
-  formData.append('reason', reason);
-  formData.append('frontFile', { uri: frontUri, type: 'image/jpeg', name: 'front.jpg' } as any);
-  formData.append('leftFile',  { uri: leftUri,  type: 'image/jpeg', name: 'left.jpg'  } as any);
-  formData.append('rightFile', { uri: rightUri, type: 'image/jpeg', name: 'right.jpg' } as any);
+  formData.append('Reason', reason);
+  formData.append('FrontFile', { uri: frontUri, type: 'image/jpeg', name: 'front.jpg' } as any);
+  formData.append('LeftFile',  { uri: leftUri,  type: 'image/jpeg', name: 'left.jpg'  } as any);
+  formData.append('RightFile', { uri: rightUri, type: 'image/jpeg', name: 'right.jpg' } as any);
 
   await uploadRequest<unknown>('/api/biometric-requests', formData);
 }
