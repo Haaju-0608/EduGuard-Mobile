@@ -260,7 +260,14 @@ export default function FaceReRegistrationScreen() {
       setHistory(updated);
       setPhase('submitted');
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Submission failed. Please try again.');
+      const msg = err instanceof Error ? err.message : '';
+      let friendly = 'Registration failed. Please try again.';
+      if (/400|bad request/i.test(msg))        friendly = 'No face detected. Please retake in good lighting with your face clearly visible.';
+      else if (/409|already|duplicate/i.test(msg)) friendly = 'You already have a pending request. Please wait for admin review.';
+      else if (/401|unauthorized|session/i.test(msg)) friendly = 'Your session has expired. Please sign in again.';
+      else if (/network|timeout|fetch|connect/i.test(msg)) friendly = 'Could not reach the server. Check your connection and try again.';
+      else if (/500|server error/i.test(msg))   friendly = 'Server error. Please try again in a moment.';
+      setErrorMsg(friendly);
       setPhase('error');
     }
   };
@@ -468,7 +475,10 @@ export default function FaceReRegistrationScreen() {
                   </View>
                 ))}
               </View>
-              <AppText variant="caption" style={{ textAlign: 'center', marginBottom: 14 }}>{angle.instruction}</AppText>
+              <AppText variant="caption" style={{ textAlign: 'center', marginBottom: 6 }}>{angle.instruction}</AppText>
+              <AppText variant="caption" color="rgba(245,158,11,0.8)" style={{ textAlign: 'center', marginBottom: 10 }}>
+                💡 Good lighting · face inside the oval · look clearly at camera
+              </AppText>
               <Button label={isCapturing ? 'Capturing…' : `Capture ${angle.label}`} onPress={handleCapture} loading={isCapturing} style={cam.captureBtn} />
             </View>
           </>

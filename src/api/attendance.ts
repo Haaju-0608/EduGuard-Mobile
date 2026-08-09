@@ -69,6 +69,18 @@ export async function getExamSlotsForClass(classId: string): Promise<ExamSlotBri
   return Array.isArray(data) ? data : (data as any).items ?? [];
 }
 
+export async function getInProgressSessionForClass(classId: string): Promise<AttendanceSession | null> {
+  try {
+    const data = await apiRequest<{ items?: AttendanceSession[] } | AttendanceSession[]>(
+      `/api/attendance-sessions?classId=${classId}&status=InProgress&pageSize=1`,
+    );
+    const items = Array.isArray(data) ? data : (data as any).items ?? [];
+    return items[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export async function openAttendanceSession(
   classId: string,
   examSlotId?: string,

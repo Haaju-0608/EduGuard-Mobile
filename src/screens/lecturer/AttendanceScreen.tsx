@@ -24,6 +24,7 @@ import {
   createAttendanceRecord,
   getClassEnrollments,
   getExamSlotsForClass,
+  getInProgressSessionForClass,
   getLecturerClasses,
   openAttendanceSession,
   updateAttendanceRecord,
@@ -289,10 +290,30 @@ export default function AttendanceScreen() {
               const session = await openAttendanceSession(cls.id, exam.id);
               setPhase({ tag: 'video-pick', cls, exam, sessionId: session.id });
             } catch (e: any) {
+              const alreadyOpen = /already has an in-progress/i.test(e.message ?? '');
+              const reloadedExams = await getExamSlotsForClass(cls.id).catch(() => []);
+
+              if (alreadyOpen) {
+                const existing = await getInProgressSessionForClass(cls.id);
+                if (existing) {
+                  setPhase({ tag: 'exams', cls, exams: reloadedExams, loading: false, error: null });
+                  Alert.alert(
+                    'Session Already Open',
+                    'This class has an ongoing attendance session. Would you like to continue it?',
+                    [
+                      { text: 'Cancel', style: 'cancel' },
+                      {
+                        text: 'Continue',
+                        onPress: () => setPhase({ tag: 'video-pick', cls, exam, sessionId: existing.id }),
+                      },
+                    ],
+                  );
+                  return;
+                }
+              }
+
+              setPhase({ tag: 'exams', cls, exams: reloadedExams, loading: false, error: null });
               Alert.alert('Failed to Open Session', e.message ?? 'Please try again.');
-              setPhase({ tag: 'exams', cls, exams: [], loading: true, error: null });
-              const exams = await getExamSlotsForClass(cls.id).catch(() => []);
-              setPhase({ tag: 'exams', cls, exams, loading: false, error: null });
             }
           },
         },

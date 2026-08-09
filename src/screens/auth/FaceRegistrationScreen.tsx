@@ -292,16 +292,16 @@ function SuccessView({ onContinue }: { onContinue: () => void }) {
 function friendlyBiometricError(err: unknown): string {
   const msg = err instanceof Error ? err.message : '';
   if (/400|bad request/i.test(msg))
-    return 'Ảnh không đạt yêu cầu. Vui lòng chụp lại ở nơi đủ sáng, mặt nhìn thẳng và rõ vào camera.';
+    return 'No face detected. Please retake your photos in good lighting with your face clearly visible inside the frame.';
   if (/409|already|duplicate|exists/i.test(msg))
-    return 'Bạn đã có yêu cầu đăng ký đang chờ duyệt. Vui lòng đợi admin xem xét.';
+    return 'You already have a pending registration request. Please wait for admin review.';
   if (/401|unauthorized|session/i.test(msg))
-    return 'Phiên đăng nhập hết hạn. Vui lòng đăng nhập lại.';
+    return 'Your session has expired. Please sign in again.';
   if (/network|timeout|fetch|connect/i.test(msg))
-    return 'Không kết nối được với máy chủ. Kiểm tra lại đường truyền và thử lại.';
+    return 'Could not reach the server. Please check your connection and try again.';
   if (/500|server error/i.test(msg))
-    return 'Lỗi hệ thống. Vui lòng thử lại sau ít phút.';
-  return 'Đăng ký thất bại. Vui lòng thử lại.';
+    return 'Server error. Please try again in a moment.';
+  return 'Registration failed. Please try again.';
 }
 
 // ── Main screen ────────────────────────────────────────────────────────────────
@@ -499,8 +499,11 @@ export default function FaceRegistrationScreen() {
                 ))}
               </View>
 
-              <AppText variant="caption" style={{ textAlign: 'center', marginBottom: 14 }}>
+              <AppText variant="caption" style={{ textAlign: 'center', marginBottom: 6 }}>
                 {angle.instruction}
+              </AppText>
+              <AppText variant="caption" color="rgba(245,158,11,0.8)" style={{ textAlign: 'center', marginBottom: 10 }}>
+                💡 Good lighting · face inside the oval · look clearly at camera
               </AppText>
               <Button
                 label={isCapturing ? 'Capturing…' : `Capture ${angle.label}`}
