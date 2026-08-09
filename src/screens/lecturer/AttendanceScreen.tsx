@@ -55,7 +55,12 @@ function fmtDate(iso: string | null) {
 }
 
 function fmtTime(iso: string) {
-  return new Date(iso).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+  const d = new Date(iso);
+  const today = new Date();
+  const isToday = d.toDateString() === today.toDateString();
+  const time = d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+  if (isToday) return time;
+  return `${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} · ${time}`;
 }
 
 function fmtExamDate(iso: string) {
