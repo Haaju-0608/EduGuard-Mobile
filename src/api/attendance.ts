@@ -50,7 +50,7 @@ export async function getLecturerClasses(): Promise<AttendanceClass[]> {
 
 export async function getClassEnrollments(classId: string): Promise<ClassEnrollment[]> {
   return apiRequest<ClassEnrollment[]>(
-    `/api/classes/${classId}/enrollments?expand=student&pageSize=200`,
+    `/api/classes/${classId}/enrollments?expand=student&pageSize=100`,
   );
 }
 
