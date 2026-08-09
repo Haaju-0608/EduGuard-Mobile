@@ -29,7 +29,7 @@ const ANGLES = [
   { key: 'right', label: 'Right Profile', instruction: 'Slowly turn your head to the right', arrow: '→' },
 ] as const;
 
-type Phase = 'permission' | 'denied' | 'scanning' | 'preview' | 'uploading' | 'success' | 'error';
+type Phase = 'permission' | 'denied' | 'scanning' | 'confirm' | 'preview' | 'uploading' | 'success' | 'error';
 
 // ── Corner bracket ─────────────────────────────────────────────────────────────
 
@@ -296,6 +296,7 @@ export default function FaceRegistrationScreen() {
   const [angleIndex, setAngleIndex]     = useState(0); // 0=front, 1=left, 2=right
   const [photos, setPhotos]             = useState<string[]>([]); // captured URIs
   const [isCapturing, setIsCapturing]   = useState(false);
+  const [pendingUri, setPendingUri]     = useState<string | null>(null);
   const [errorMsg, setErrorMsg]         = useState('');
 
   const cameraRef    = useRef<CameraView>(null);
@@ -338,15 +339,29 @@ export default function FaceRegistrationScreen() {
       return;
     }
 
-    const newPhotos = [...photos, uri];
-    setPhotos(newPhotos);
-
-    if (newPhotos.length < 3) {
-      setAngleIndex(newPhotos.length); // advance to next angle
-    } else {
-      setPhase('preview');             // all 3 done
-    }
+    setPendingUri(uri);
+    setPhase('confirm');
     setIsCapturing(false);
+  };
+
+  // ── Confirm captured photo ─────────────────────────────────────────────────
+
+  const handleConfirm = () => {
+    if (!pendingUri) return;
+    const newPhotos = [...photos, pendingUri];
+    setPhotos(newPhotos);
+    setPendingUri(null);
+    if (newPhotos.length < 3) {
+      setAngleIndex(newPhotos.length);
+      setPhase('scanning');
+    } else {
+      setPhase('preview');
+    }
+  };
+
+  const handleRetakeAngle = () => {
+    setPendingUri(null);
+    setPhase('scanning');
   };
 
   // ── Submit all 3 photos ────────────────────────────────────────────────────
@@ -402,6 +417,21 @@ export default function FaceRegistrationScreen() {
         {/* Phase views */}
         {phase === 'permission' && <PermissionView onRequest={handleRequest} />}
         {phase === 'denied'     && <DeniedView />}
+        {phase === 'confirm'    && pendingUri && (
+          <View style={s.centeredSection}>
+            <View style={s.card}>
+              <AppText variant="h3" style={s.cardTitle}>Check Your Photo</AppText>
+              <AppText variant="body-sm" color={COLORS.muted} style={[s.cardSubtitle, { marginBottom: 16 }]}>
+                {ANGLES[angleIndex].label} — is your face clearly visible?
+              </AppText>
+              <Image source={{ uri: pendingUri }} style={{ width: '100%', height: 280, borderRadius: RADIUS.md, marginBottom: 20 }} resizeMode="cover" />
+              <Button label="Looks good!" onPress={handleConfirm} style={{ width: '100%', marginBottom: 12 }} />
+              <TouchableOpacity onPress={handleRetakeAngle} activeOpacity={0.75} style={s.retakeBtn}>
+                <AppText style={s.retakeText}>Retake this photo</AppText>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
         {phase === 'preview'    && <PreviewView photos={photos} onRetake={handleRetake} onSubmit={handleSubmit} />}
         {phase === 'uploading'  && <UploadingView />}
         {phase === 'error'      && <ErrorView message={errorMsg} onRetry={handleRetry} />}

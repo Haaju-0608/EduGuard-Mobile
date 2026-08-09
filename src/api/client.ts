@@ -89,11 +89,11 @@ export async function uploadRequest<T>(path: string, formData: FormData): Promis
     throw new Error(`Server error ${res.status}: ${rawText.slice(0, 200)}`);
   }
 
-  if (!json.success) {
+  if (!res.ok || json.success === false) {
     const msg = cleanErrorMessage(json, '');
     throw new Error(msg || `Upload failed (${res.status}): ${rawText.slice(0, 300)}`);
   }
-  return json.data as T;
+  return (json.data ?? json) as T;
 }
 
 export async function apiRequest<T>(
