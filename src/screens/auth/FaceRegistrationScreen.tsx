@@ -287,6 +287,23 @@ function SuccessView({ onContinue }: { onContinue: () => void }) {
   );
 }
 
+// ── User-friendly error mapper ─────────────────────────────────────────────────
+
+function friendlyBiometricError(err: unknown): string {
+  const msg = err instanceof Error ? err.message : '';
+  if (/400|bad request/i.test(msg))
+    return 'Ảnh không đạt yêu cầu. Vui lòng chụp lại ở nơi đủ sáng, mặt nhìn thẳng và rõ vào camera.';
+  if (/409|already|duplicate|exists/i.test(msg))
+    return 'Bạn đã có yêu cầu đăng ký đang chờ duyệt. Vui lòng đợi admin xem xét.';
+  if (/401|unauthorized|session/i.test(msg))
+    return 'Phiên đăng nhập hết hạn. Vui lòng đăng nhập lại.';
+  if (/network|timeout|fetch|connect/i.test(msg))
+    return 'Không kết nối được với máy chủ. Kiểm tra lại đường truyền và thử lại.';
+  if (/500|server error/i.test(msg))
+    return 'Lỗi hệ thống. Vui lòng thử lại sau ít phút.';
+  return 'Đăng ký thất bại. Vui lòng thử lại.';
+}
+
 // ── Main screen ────────────────────────────────────────────────────────────────
 
 export default function FaceRegistrationScreen() {
@@ -372,7 +389,7 @@ export default function FaceRegistrationScreen() {
       await submitBiometricRegistration(photos[0], photos[1], photos[2]);
       setPhase('success');
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Registration failed. Please try again.');
+      setErrorMsg(friendlyBiometricError(err));
       setPhase('error');
     }
   };
