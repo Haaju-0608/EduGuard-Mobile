@@ -131,7 +131,9 @@ function ClassCard({ cls, onPress }: { cls: AttendanceClass; onPress: () => void
 
 function ExamCard({ exam, onPress }: { exam: ExamSlotBrief; onPress: () => void }) {
   const sc = EXAM_STATUS_CFG[exam.status] ?? EXAM_STATUS_CFG.Scheduled;
-  const canAttend = exam.status === 'InProgress' || exam.status === 'Scheduled';
+  const isExpired = new Date(exam.endTime) < new Date();
+  const canAttend = (exam.status === 'InProgress' || exam.status === 'Scheduled') && !isExpired;
+  const expiredLabel = isExpired && exam.status !== 'Cancelled' && exam.status !== 'Completed';
 
   return (
     <TouchableOpacity
@@ -153,9 +155,15 @@ function ExamCard({ exam, onPress }: { exam: ExamSlotBrief; onPress: () => void 
           </AppText>
         </View>
         <View style={{ alignItems: 'flex-end', gap: 8 }}>
-          <View style={[s.examStatusChip, { backgroundColor: sc.bg, borderColor: sc.border }]}>
-            <AppText style={[s.examStatusText, { color: sc.color }]}>{sc.label}</AppText>
-          </View>
+          {expiredLabel ? (
+            <View style={[s.examStatusChip, { backgroundColor: 'rgba(100,100,100,0.15)', borderColor: 'rgba(100,100,100,0.3)' }]}>
+              <AppText style={[s.examStatusText, { color: COLORS.muted }]}>Expired</AppText>
+            </View>
+          ) : (
+            <View style={[s.examStatusChip, { backgroundColor: sc.bg, borderColor: sc.border }]}>
+              <AppText style={[s.examStatusText, { color: sc.color }]}>{sc.label}</AppText>
+            </View>
+          )}
           {canAttend && <AppText style={{ fontSize: 18, color: COLORS.muted }}>›</AppText>}
         </View>
       </View>
