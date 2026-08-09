@@ -253,9 +253,16 @@ export default function AttendanceScreen() {
     setPhase({ tag: 'exams', cls, exams: [], loading: true, error: null });
     try {
       const raw = await getExamSlotsForClass(cls.id);
-      const exams = [...raw].sort(
-        (a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime(),
-      );
+      const now = Date.now();
+      const priority = (e: ExamSlotBrief) => {
+        const active = (e.status === 'Scheduled' || e.status === 'InProgress') && new Date(e.endTime).getTime() > now;
+        return active ? 0 : 1;
+      };
+      const exams = [...raw].sort((a, b) => {
+        const pd = priority(a) - priority(b);
+        if (pd !== 0) return pd;
+        return new Date(b.startTime).getTime() - new Date(a.startTime).getTime();
+      });
       setPhase({ tag: 'exams', cls, exams, loading: false, error: null });
     } catch (e: any) {
       setPhase({ tag: 'exams', cls, exams: [], loading: false, error: e.message ?? 'Failed to load exams' });
