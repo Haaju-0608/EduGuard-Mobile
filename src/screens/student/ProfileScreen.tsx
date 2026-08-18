@@ -1,5 +1,5 @@
-import React from 'react';
-import { View, ScrollView, TouchableOpacity, StyleSheet } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { Image, View, ScrollView, TouchableOpacity, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -10,6 +10,7 @@ import { Button } from '../../components/ui/Button';
 import { COLORS, FONTS, RADIUS } from '../../constants/theme';
 import { useAuth } from '../../navigation/AuthContext';
 import type { MainStackParamList } from '../../navigation/types';
+import { getMyBiometricRequests } from '../../api/biometric';
 
 type RootNav = StackNavigationProp<MainStackParamList>;
 
@@ -47,6 +48,18 @@ export default function ProfileScreen() {
     .join('')
     .toUpperCase();
 
+  const [facePhotoUrl, setFacePhotoUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isLecturer) return;
+    getMyBiometricRequests()
+      .then((requests) => {
+        const approved = requests.find((r) => r.status === 'Approved');
+        setFacePhotoUrl(approved?.frontImageUrl ?? null);
+      })
+      .catch(() => {});
+  }, [isLecturer]);
+
   return (
     <View style={s.root}>
       <StatusBar style="light" />
@@ -63,14 +76,18 @@ export default function ProfileScreen() {
           {/* ── Avatar + name ── */}
           <View style={s.avatarSection}>
             <View style={s.avatarWrap}>
-              <LinearGradient
-                colors={isLecturer ? [COLORS.cyan, COLORS.blue] : [COLORS.blue, COLORS.cyan]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={s.avatarGradient}
-              >
-                <AppText style={s.avatarInitials}>{initials}</AppText>
-              </LinearGradient>
+              {facePhotoUrl ? (
+                <Image source={{ uri: facePhotoUrl }} style={s.avatarPhoto} resizeMode="cover" />
+              ) : (
+                <LinearGradient
+                  colors={isLecturer ? [COLORS.cyan, COLORS.blue] : [COLORS.blue, COLORS.cyan]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={s.avatarGradient}
+                >
+                  <AppText style={s.avatarInitials}>{initials}</AppText>
+                </LinearGradient>
+              )}
             </View>
 
             <AppText variant="h3" style={s.userName}>
@@ -199,6 +216,13 @@ const s = StyleSheet.create({
     borderRadius: RADIUS.full,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  avatarPhoto: {
+    width: 80,
+    height: 80,
+    borderRadius: RADIUS.full,
+    borderWidth: 2,
+    borderColor: COLORS.cyan,
   },
   avatarInitials: {
     fontFamily: FONTS.heading,

@@ -80,13 +80,11 @@ const STATUS_CFG: Record<AttendanceStatus, { color: string; bg: string; border: 
 function SummaryCard({ records }: { records: DisplayRecord[] }) {
   const total   = records.length;
   const present = records.filter((r) => r.status === 'Present').length;
-  const late    = records.filter((r) => r.status === 'Late').length;
   const absent  = records.filter((r) => r.status === 'Absent').length;
-  const rate    = total > 0 ? ((present + late) / total) * 100 : 0;
+  const rate    = total > 0 ? (present / total) * 100 : 0;
 
   const stats = [
     { count: present, label: 'Present', cfg: STATUS_CFG.Present },
-    { count: late,    label: 'Late',    cfg: STATUS_CFG.Late    },
     { count: absent,  label: 'Absent',  cfg: STATUS_CFG.Absent  },
   ];
 
@@ -107,7 +105,6 @@ function SummaryCard({ records }: { records: DisplayRecord[] }) {
       </View>
       <View style={s.progressBar}>
         <View style={{ flex: present || 0.001, backgroundColor: COLORS.green }} />
-        <View style={{ flex: late    || 0.001, backgroundColor: COLORS.gold  }} />
         <View style={{ flex: absent  || 0.001, backgroundColor: COLORS.red   }} />
       </View>
       <View style={s.statRow}>
@@ -179,7 +176,6 @@ type FilterKey = 'all' | AttendanceStatus;
 const FILTER_OPTIONS: { key: FilterKey; label: string }[] = [
   { key: 'all',     label: 'All'     },
   { key: 'Present', label: 'Present' },
-  { key: 'Late',    label: 'Late'    },
   { key: 'Absent',  label: 'Absent'  },
 ];
 

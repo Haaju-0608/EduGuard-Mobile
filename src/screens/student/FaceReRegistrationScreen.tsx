@@ -46,7 +46,7 @@ const STATUS_CFG = {
   Rejected: { color: COLORS.red,   bg: 'rgba(239,68,68,0.12)',  border: 'rgba(239,68,68,0.28)',  icon: '✗',  label: 'Rejected' },
 };
 
-type Phase = 'reason' | 'permission' | 'denied' | 'scanning' | 'preview' | 'uploading' | 'submitted' | 'error';
+type Phase = 'reason' | 'permission' | 'denied' | 'scanning' | 'confirm' | 'preview' | 'uploading' | 'submitted' | 'error';
 
 // ── Camera helpers ─────────────────────────────────────────────────────────────
 
@@ -184,7 +184,9 @@ export default function FaceReRegistrationScreen() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [angleIndex, setAngleIndex] = useState(0);
   const [photos, setPhotos]         = useState<string[]>([]);
+  const [pendingUri, setPendingUri] = useState<string | null>(null);
   const [isCapturing, setIsCapturing] = useState(false);
+  const [facing, setFacing] = useState<'front' | 'back'>('front');
   const [errorMsg, setErrorMsg]     = useState('');
   const [history, setHistory]       = useState<BiometricRequest[]>([]);
   const [historyLoading, setHistoryLoading] = useState(true);
@@ -237,10 +239,8 @@ export default function FaceReRegistrationScreen() {
 
     try {
       const photo = await cameraRef.current.takePictureAsync({ quality: 0.85 });
-      const newPhotos = [...photos, photo!.uri];
-      setPhotos(newPhotos);
-      if (newPhotos.length < 3) setAngleIndex(newPhotos.length);
-      else setPhase('preview');
+      setPendingUri(photo!.uri);
+      setPhase('confirm');
     } catch {
       setErrorMsg('Failed to capture photo. Please try again.');
       setPhase('error');
@@ -248,6 +248,17 @@ export default function FaceReRegistrationScreen() {
       setIsCapturing(false);
     }
   };
+
+  const handleConfirmAngle = () => {
+    if (!pendingUri) return;
+    const newPhotos = [...photos, pendingUri];
+    setPhotos(newPhotos);
+    setPendingUri(null);
+    if (newPhotos.length < 3) { setAngleIndex(newPhotos.length); setPhase('scanning'); }
+    else setPhase('preview');
+  };
+
+  const handleRetakeAngle = () => { setPendingUri(null); setPhase('scanning'); };
 
   // ── Submit ────────────────────────────────────────────────────────────────────
 
@@ -286,7 +297,7 @@ export default function FaceReRegistrationScreen() {
       <StatusBar style="light" />
 
       {isScanning && (
-        <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing="front" zoom={0} />
+        <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing={facing} zoom={0} />
       )}
       <View style={[StyleSheet.absoluteFill, { backgroundColor: isScanning ? 'rgba(10,15,46,0.48)' : COLORS.navy }]} />
       <View style={[s.orb, s.orb1]} />
@@ -297,14 +308,15 @@ export default function FaceReRegistrationScreen() {
         <View style={s.header}>
           <TouchableOpacity style={s.backBtn} activeOpacity={0.75}
             onPress={() => {
-              if (phase === 'scanning' || phase === 'preview') { resetCamera(); setPhase('reason'); }
+              if (phase === 'confirm') { handleRetakeAngle(); }
+              else if (phase === 'scanning' || phase === 'preview') { resetCamera(); setPhase('reason'); }
               else if (phase === 'permission' || phase === 'denied') setPhase('reason');
               else navigation.goBack();
             }}>
             <AppText style={s.backArrow}>←</AppText>
           </TouchableOpacity>
           <AppText variant="h3" style={s.headerTitle}>
-            {phase === 'scanning' ? `Photo ${angleIndex + 1} of 3` : 'Re-registration Request'}
+            {phase === 'scanning' ? `Photo ${angleIndex + 1} of 3` : phase === 'confirm' ? `Photo ${angleIndex + 1} of 3` : 'Re-registration Request'}
           </AppText>
           <View style={{ width: 40 }} />
         </View>
@@ -453,6 +465,9 @@ export default function FaceReRegistrationScreen() {
             </View>
 
             <View style={cam.cameraSection}>
+              <TouchableOpacity style={cam.flipBtn} onPress={() => setFacing(f => f === 'front' ? 'back' : 'front')} activeOpacity={0.75}>
+                <AppText style={cam.flipIcon}>⇄</AppText>
+              </TouchableOpacity>
               <ScanFrame active={!isCapturing} />
               <View style={cam.directionBadge}>
                 <AppText style={cam.directionArrow}>{angle.arrow}</AppText>
@@ -482,6 +497,26 @@ export default function FaceReRegistrationScreen() {
               <Button label={isCapturing ? 'Capturing…' : `Capture ${angle.label}`} onPress={handleCapture} loading={isCapturing} style={cam.captureBtn} />
             </View>
           </>
+        )}
+
+        {/* ── Phase: Confirm (per-photo review) ── */}
+        {phase === 'confirm' && pendingUri && (
+          <View style={s.center}>
+            <View style={[s.card, { padding: 0, overflow: 'hidden', width: '100%' }]}>
+              <Image source={{ uri: pendingUri }} style={s.confirmPhoto} resizeMode="cover" />
+              <View style={s.confirmActions}>
+                <AppText variant="semi" color={COLORS.whiteSoft} style={{ textAlign: 'center', marginBottom: 16 }}>
+                  {ANGLES[angleIndex].label} — looks good?
+                </AppText>
+                <Button label="Looks good!" onPress={handleConfirmAngle} style={{ width: '100%', marginBottom: 12 }} />
+                <TouchableOpacity onPress={handleRetakeAngle} activeOpacity={0.75} style={{ paddingVertical: 10 }}>
+                  <AppText style={{ fontFamily: FONTS.bodySemi, fontSize: 13, color: 'rgba(241,245,255,0.45)', textAlign: 'center' }}>
+                    Retake this photo
+                  </AppText>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
         )}
 
         {/* ── Phase: Preview ── */}
@@ -666,6 +701,10 @@ const s = StyleSheet.create({
   pickerBtnText:   { flex: 1, fontFamily: FONTS.body, fontSize: 14 },
   pickerChevron:   { fontSize: 16, color: COLORS.muted },
 
+  // Confirm phase
+  confirmPhoto:   { width: '100%', aspectRatio: 3 / 4, borderTopLeftRadius: RADIUS['2xl'], borderTopRightRadius: RADIUS['2xl'] },
+  confirmActions: { padding: 20 },
+
   // Photo preview
   thumbRow:  { flexDirection: 'row', gap: 12, marginBottom: 16 },
   thumbWrap: { flex: 1, alignItems: 'center', gap: 6 },
@@ -698,6 +737,8 @@ const cam = StyleSheet.create({
   stepDotDone:    { backgroundColor: COLORS.green },
   stepDotActive:  { width: 22, backgroundColor: COLORS.cyan },
   cameraSection:  { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  flipBtn:        { position: 'absolute', top: 12, right: 16, width: 44, height: 44, borderRadius: RADIUS.full, backgroundColor: 'rgba(10,15,46,0.72)', borderWidth: 1, borderColor: COLORS.border, alignItems: 'center', justifyContent: 'center', zIndex: 10 },
+  flipIcon:       { fontSize: 22, color: COLORS.whiteSoft },
   frameContainer: { width: FRAME_W + PAD * 2, height: FRAME_H + PAD * 2, alignItems: 'center', justifyContent: 'center' },
   cornerBracket:  { position: 'absolute', width: BRACKET, height: BRACKET },
   bracketArm:     { position: 'absolute', backgroundColor: COLORS.cyan, borderRadius: 2 },

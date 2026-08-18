@@ -135,6 +135,13 @@ export async function uploadAttendanceVideo(
   }
 }
 
+export async function getSessionRecords(sessionId: string): Promise<AttendanceRecord[]> {
+  const data = await apiRequest<{ items?: AttendanceRecord[] } | AttendanceRecord[]>(
+    `/api/attendance-records?sessionId=${sessionId}&pageSize=200`,
+  );
+  return Array.isArray(data) ? data : (data as any).items ?? [];
+}
+
 export async function updateAttendanceRecord(
   recordId: string,
   status: 'Present' | 'Absent',

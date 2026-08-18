@@ -26,6 +26,7 @@ import {
   getExamSlotsForClass,
   getInProgressSessionForClass,
   getLecturerClasses,
+  getSessionRecords,
   openAttendanceSession,
   updateAttendanceRecord,
   uploadAttendanceVideo,
@@ -299,12 +300,23 @@ export default function AttendanceScreen() {
                   setPhase({ tag: 'exams', cls, exams: reloadedExams, loading: false, error: null });
                   Alert.alert(
                     'Session Already Open',
-                    'This class has an ongoing attendance session. Would you like to continue it?',
+                    'This class has an ongoing attendance session.',
                     [
                       { text: 'Cancel', style: 'cancel' },
                       {
-                        text: 'Continue',
-                        onPress: () => setPhase({ tag: 'video-pick', cls, exam, sessionId: existing.id }),
+                        text: 'View Results',
+                        onPress: async () => {
+                          setPhase({ tag: 'uploading', cls, exam });
+                          try {
+                            const [existingRecords, enrollments] = await Promise.all([
+                              getSessionRecords(existing.id),
+                              getClassEnrollments(cls.id),
+                            ]);
+                            setPhase({ tag: 'results', cls, exam, sessionId: existing.id, records: existingRecords, enrollments, toggling: null });
+                          } catch {
+                            setPhase({ tag: 'video-pick', cls, exam, sessionId: existing.id });
+                          }
+                        },
                       },
                     ],
                   );
@@ -650,9 +662,21 @@ export default function AttendanceScreen() {
               </View>
             </View>
 
-            <AppText variant="caption" color={COLORS.muted} style={{ marginBottom: 12 }}>
-              Tap ⇄ to manually override AI results
-            </AppText>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+              <AppText variant="caption" color={COLORS.muted}>
+                Tap ⇄ to manually override
+              </AppText>
+              <TouchableOpacity
+                activeOpacity={0.75}
+                onPress={() => {
+                  if (phase.tag !== 'results') return;
+                  setPhase({ tag: 'video-pick', cls: phase.cls, exam: phase.exam, sessionId: phase.sessionId });
+                }}
+                style={s.rerunBtn}
+              >
+                <AppText style={s.rerunText}>🎬 Re-run AI</AppText>
+              </TouchableOpacity>
+            </View>
 
             <View style={s.studentList}>
               {rows.map((row) => (
@@ -782,4 +806,6 @@ const s = StyleSheet.create({
   manualChip:   { backgroundColor: 'rgba(245,158,11,0.12)', borderRadius: RADIUS.xs, paddingHorizontal: 6, paddingVertical: 2 },
   manualChipText: { fontFamily: FONTS.bodySemi, fontSize: 9, color: COLORS.gold },
   toggleBtn:    { width: 34, height: 34, borderRadius: RADIUS.md, backgroundColor: 'rgba(241,245,255,0.05)', borderWidth: 1, borderColor: COLORS.border, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
+  rerunBtn:     { backgroundColor: 'rgba(37,99,235,0.12)', borderRadius: RADIUS.full, borderWidth: 1, borderColor: 'rgba(37,99,235,0.28)', paddingHorizontal: 10, paddingVertical: 5 },
+  rerunText:    { fontFamily: FONTS.bodySemi, fontSize: 11, color: COLORS.blueBright },
 });

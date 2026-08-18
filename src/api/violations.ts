@@ -1,12 +1,13 @@
 import { apiRequest } from './client';
 
 export type BEViolationType =
-  | 'Impersonation'
-  | 'GazeDiversion'
-  | 'MultipleFaces'
-  | 'Absence'
+  | 'EyeDiversion'
+  | 'GazeDiversion'   // legacy alias — keep for backwards compat
   | 'HeadTurn'
+  | 'MultipleFaces'
   | 'FaceObstructed'
+  | 'Absence'
+  | 'Impersonation'   // legacy
   | 'TabSwitch'
   | 'WindowBlur'
   | 'ExitFullscreen';
@@ -25,9 +26,37 @@ export interface ViolationLog {
   recordedAt: string;
 }
 
-export async function getStudentViolations(): Promise<ViolationLog[]> {
-  const data = await apiRequest<{ items?: ViolationLog[] } | ViolationLog[]>(
-    '/api/violation-logs?pageSize=100&sort=recordedAt_desc',
+export async function getStudentViolations(studentId: string): Promise<ViolationLog[]> {
+  const data = await apiRequest<ViolationLog[] | { items?: ViolationLog[] }>(
+    `/api/violation-logs/student/${studentId}?page=1&pageSize=100`,
   );
   return Array.isArray(data) ? data : (data as any).items ?? [];
+}
+
+export interface ParticipationDetail {
+  id: string;
+  examSlotId?: string;
+  // BE (ExamParticipationResponseDto) trả examName là field phẳng ngay trên participation
+  // (ExamName = entity.ExamSlot?.ExamName), không lồng trong 1 object examSlot riêng.
+  examName?: string | null;
+}
+
+export async function getParticipationDetail(participationId: string): Promise<ParticipationDetail | null> {
+  try {
+    // Route thật là /api/exam-participations, không phải /api/participations (endpoint đó không
+    // tồn tại) — gọi sai route trước đây khiến tên bài thi luôn fail âm thầm, phải fallback về
+    // "Exam Session" thay vì tên thật.
+    return await apiRequest<ParticipationDetail>(`/api/exam-participations/${participationId}`);
+  } catch {
+    return null;
+  }
+}
+
+export async function getSignedEvidenceUrl(evidencePath: string): Promise<string> {
+  const encoded = encodeURIComponent(evidencePath);
+  const result = await apiRequest<{ signedUrl: string }>(
+    `/api/storage/signed-url?bucket=exam-evidence&path=${encoded}&expiresInSeconds=3600`,
+    { method: 'POST' },
+  );
+  return result.signedUrl;
 }

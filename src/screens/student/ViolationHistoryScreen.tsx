@@ -1,19 +1,22 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import {
   ActivityIndicator,
+  Image,
   View,
   ScrollView,
   TouchableOpacity,
   StyleSheet,
   Modal,
 } from 'react-native';
+import { Video, ResizeMode } from 'expo-av';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { LinearGradient } from 'expo-linear-gradient';
 import { AppText } from '../../components/ui/AppText';
 import { Button } from '../../components/ui/Button';
 import { COLORS, FONTS, RADIUS } from '../../constants/theme';
-import { getStudentViolations, ViolationLog, BEViolationType, BEViolationSeverity } from '../../api/violations';
+import { getStudentViolations, getParticipationDetail, getSignedEvidenceUrl, ViolationLog, BEViolationType, BEViolationSeverity } from '../../api/violations';
+import { useAuth } from '../../navigation/AuthContext';
 
 // ── Types ───────────────────────────────────────────────────────────────────────
 type ViolationType =
@@ -29,12 +32,15 @@ type ViolationType =
 
 type Severity = 'High' | 'Medium';
 type ReviewStatus = 'Pending Review' | 'Reviewed';
+type ViewState = 'exams' | 'violations';
 
 interface ViolationRecord {
   id: string;
+  participationId: string;
   type: ViolationType;
-  exam: string;
+  exam: string | null;
   timestamp: string;
+  rawDate: string;
   severity: Severity;
   status: ReviewStatus;
   description: string;
@@ -42,11 +48,22 @@ interface ViolationRecord {
   evidencePath: string | null;
 }
 
+interface ExamGroup {
+  participationId: string;
+  examName: string | null;
+  latestDate: string;
+  latestRaw: string;
+  violations: ViolationRecord[];
+  highCount: number;
+  medCount: number;
+}
+
 // ── BE → Display mapping ────────────────────────────────────────────────────────
 
 const VIOLATION_TYPE_MAP: Record<BEViolationType, { label: ViolationType; icon: string }> = {
-  Impersonation:  { label: 'Face Mismatch',    icon: '🎭' },
-  GazeDiversion:  { label: 'Looking Away',     icon: '👀' },
+  EyeDiversion:   { label: 'Looking Away',     icon: '👀' },
+  GazeDiversion:  { label: 'Looking Away',     icon: '👀' }, // legacy
+  Impersonation:  { label: 'Face Mismatch',    icon: '🎭' }, // legacy
   MultipleFaces:  { label: 'Multiple Faces',   icon: '👥' },
   Absence:        { label: 'No Face Detected', icon: '❓' },
   HeadTurn:       { label: 'Head Turn',        icon: '↩️' },
@@ -73,15 +90,19 @@ function toDisplay(log: ViolationLog): ViolationRecord {
     : '';
 
   return {
-    id:           log.id,
-    type:         typeInfo.label,
-    exam:         `Participation ${log.participationId.slice(0, 8)}`,
+    id:              log.id,
+    participationId: log.participationId,
+    type:            typeInfo.label,
+    // Tên bài thi không có sẵn trong response /api/violation-logs — được backfill riêng ở
+    // load() qua getParticipationDetail() (đúng route /api/exam-participations/{id}).
+    exam:            null,
     timestamp,
-    severity:     SEVERITY_MAP[log.severity] ?? 'Medium',
-    status:       log.isReviewed ? 'Reviewed' : 'Pending Review',
-    description:  `${typeInfo.label} violation detected by AI system.${confLine}`,
-    hasEvidence:  !!log.evidencePath,
-    evidencePath: log.evidencePath,
+    rawDate:         log.recordedAt,
+    severity:        SEVERITY_MAP[log.severity] ?? 'Medium',
+    status:          log.isReviewed ? 'Reviewed' : 'Pending Review',
+    description:     `${typeInfo.label} violation detected by AI system.${confLine}`,
+    hasEvidence:     !!log.evidencePath,
+    evidencePath:    log.evidencePath,
   };
 }
 
@@ -114,12 +135,13 @@ const REVIEW_CFG: Record<
   'Reviewed':       { color: COLORS.cyan, bg: 'rgba(6,182,212,0.12)',  border: 'rgba(6,182,212,0.28)'  },
 };
 
-// ── Mock camera evidence snapshot ───────────────────────────────────────────────
-function EvidenceSnapshot({ violation }: { violation: ViolationRecord }) {
-  const sev  = SEV_CFG[violation.severity];
-  const type = TYPE_CFG[violation.type];
-  const timePart = violation.timestamp.split(' · ')[1] ?? '';
-  const datePart = violation.timestamp.split(' · ')[0] ?? '';
+// ── Evidence media ───────────────────────────────────────────────────────────────
+function EvidenceSnapshot({ violation, signedUrl, urlLoading }: {
+  violation: ViolationRecord;
+  signedUrl: string | null;
+  urlLoading: boolean;
+}) {
+  const sev = SEV_CFG[violation.severity];
 
   if (!violation.hasEvidence) {
     return (
@@ -133,62 +155,47 @@ function EvidenceSnapshot({ violation }: { violation: ViolationRecord }) {
     );
   }
 
-  return (
-    <View style={ev.root}>
-      {/* Camera frame */}
-      <View style={ev.cameraFrame}>
-        {/* Corner brackets */}
-        {(['tl', 'tr', 'bl', 'br'] as const).map((pos) => {
-          const isTop  = pos[0] === 't';
-          const isLeft = pos[1] === 'l';
-          return (
-            <View
-              key={pos}
-              style={[
-                ev.corner,
-                isTop  ? { top: 10 }    : { bottom: 10 },
-                isLeft ? { left: 10 }   : { right: 10 },
-                {
-                  borderTopWidth:    isTop    ? 2 : 0,
-                  borderBottomWidth: !isTop   ? 2 : 0,
-                  borderLeftWidth:   isLeft   ? 2 : 0,
-                  borderRightWidth:  !isLeft  ? 2 : 0,
-                  borderTopColor:    sev.color,
-                  borderBottomColor: sev.color,
-                  borderLeftColor:   sev.color,
-                  borderRightColor:  sev.color,
-                },
-              ]}
-            />
-          );
-        })}
+  const ext = violation.evidencePath?.split('.').pop()?.toLowerCase() ?? '';
+  const isImage = ['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(ext);
 
-        {/* REC indicator */}
-        <View style={ev.recRow}>
-          <View style={ev.recDot} />
-          <AppText style={ev.recText}>REC</AppText>
-          <AppText style={[ev.recText, { marginLeft: 8, opacity: 0.6 }]}>{datePart}</AppText>
-        </View>
-
-        {/* Face oval with icon */}
-        <View style={[ev.oval, { borderColor: sev.color }]}>
-          <AppText style={ev.violationIcon}>{type.icon}</AppText>
-          <View style={[ev.ovalOverlay, { backgroundColor: sev.color }]}>
-            <AppText style={ev.ovalOverlayIcon}>⚠</AppText>
-          </View>
-        </View>
-
-        {/* Bottom: time + violation label */}
-        <View style={ev.bottomBar}>
-          <AppText style={ev.timeStamp}>{timePart}</AppText>
-          <View style={[ev.typeChip, { backgroundColor: sev.bg, borderColor: sev.border }]}>
-            <AppText style={[ev.typeChipText, { color: sev.color }]}>
-              {violation.type.toUpperCase()}
-            </AppText>
-          </View>
+  if (isImage && signedUrl) {
+    return (
+      <View style={ev.root}>
+        <Image source={{ uri: signedUrl }} style={ev.evidenceImage} resizeMode="cover" />
+        <View style={[ev.evidenceBadge, { backgroundColor: sev.bg, borderColor: sev.border }]}>
+          <AppText style={[ev.evidenceBadgeText, { color: sev.color }]}>📷 Evidence Snapshot</AppText>
         </View>
       </View>
-    </View>
+    );
+  }
+
+  // Video (.webm) — inline player
+  if (urlLoading) {
+    return (
+      <View style={[ev.videoThumb, { justifyContent: 'center', alignItems: 'center' }]}>
+        <ActivityIndicator size="large" color={sev.color} />
+        <AppText variant="caption" color={COLORS.muted} style={{ marginTop: 10 }}>Loading video…</AppText>
+      </View>
+    );
+  }
+
+  if (!signedUrl) {
+    return (
+      <View style={ev.noEvidenceBox}>
+        <AppText style={{ fontSize: 30, marginBottom: 8 }}>⚠️</AppText>
+        <AppText variant="semi" color={COLORS.muted}>Could not load video</AppText>
+      </View>
+    );
+  }
+
+  return (
+    <Video
+      source={{ uri: signedUrl }}
+      style={ev.videoPlayer}
+      useNativeControls
+      resizeMode={ResizeMode.CONTAIN}
+      shouldPlay={false}
+    />
   );
 }
 
@@ -200,13 +207,25 @@ function ViolationDetailModal({
   violation: ViolationRecord | null;
   onClose: () => void;
 }) {
+  const [signedUrl, setSignedUrl]     = useState<string | null>(null);
+  const [urlLoading, setUrlLoading]   = useState(false);
+
+  useEffect(() => {
+    if (!violation?.evidencePath) { setSignedUrl(null); return; }
+    setSignedUrl(null);
+    setUrlLoading(true);
+    getSignedEvidenceUrl(violation.evidencePath)
+      .then(setSignedUrl)
+      .catch(() => setSignedUrl(null))
+      .finally(() => setUrlLoading(false));
+  }, [violation?.evidencePath]);
+
   if (!violation) return null;
   const sev    = SEV_CFG[violation.severity];
   const rev    = REVIEW_CFG[violation.status];
   const type   = TYPE_CFG[violation.type];
 
   const details: { label: string; value: string }[] = [
-    { label: 'Exam',      value: violation.exam      },
     { label: 'Timestamp', value: violation.timestamp },
     { label: 'Severity',  value: violation.severity  },
     { label: 'Status',    value: violation.status    },
@@ -221,20 +240,16 @@ function ViolationDetailModal({
       statusBarTranslucent
     >
       <View style={md.backdrop}>
-        {/* Dismiss tap target (behind the sheet) */}
         <TouchableOpacity
           style={StyleSheet.absoluteFill}
           activeOpacity={1}
           onPress={onClose}
         />
 
-        {/* Bottom sheet */}
         <View style={md.sheet}>
-          {/* Drag handle */}
           <View style={md.dragHandle} />
 
           <ScrollView showsVerticalScrollIndicator={false} bounces={false}>
-            {/* Sheet header */}
             <LinearGradient
               colors={[sev.color + '22', 'transparent']}
               style={md.sheetHeaderGrad}
@@ -254,15 +269,13 @@ function ViolationDetailModal({
               </View>
             </LinearGradient>
 
-            {/* Evidence snapshot */}
             <View style={md.evidenceSection}>
               <AppText variant="label" style={{ marginBottom: 10, letterSpacing: 0.8 }}>
                 Evidence Snapshot
               </AppText>
-              <EvidenceSnapshot violation={violation} />
+              <EvidenceSnapshot violation={violation} signedUrl={signedUrl} urlLoading={urlLoading} />
             </View>
 
-            {/* Details grid */}
             <View style={md.detailsGrid}>
               {details.map((d) => (
                 <View key={d.label} style={md.detailRow}>
@@ -290,7 +303,6 @@ function ViolationDetailModal({
               ))}
             </View>
 
-            {/* AI description */}
             <View style={md.descSection}>
               <AppText variant="label" style={{ marginBottom: 8, letterSpacing: 0.8 }}>
                 AI Detection Report
@@ -302,7 +314,6 @@ function ViolationDetailModal({
               </View>
             </View>
 
-            {/* Close button */}
             <View style={md.closeSection}>
               <Button label="Close" variant="ghost" onPress={onClose} style={{ width: '100%' }} />
             </View>
@@ -310,6 +321,50 @@ function ViolationDetailModal({
         </View>
       </View>
     </Modal>
+  );
+}
+
+// ── Exam group card ─────────────────────────────────────────────────────────────
+function ExamCard({ group, onPress }: { group: ExamGroup; onPress: () => void }) {
+  const hasHigh = group.highCount > 0;
+  const sev = hasHigh ? SEV_CFG.High : SEV_CFG.Medium;
+
+  return (
+    <TouchableOpacity
+      onPress={onPress}
+      activeOpacity={0.78}
+      style={[s.examCard, { borderLeftColor: sev.color }]}
+    >
+      <View style={[s.examIconBubble, { backgroundColor: sev.bg, borderColor: sev.border }]}>
+        <AppText style={{ fontSize: 22 }}>📋</AppText>
+      </View>
+
+      <View style={s.examCardContent}>
+        <AppText variant="semi" color={COLORS.whiteSoft} numberOfLines={2}>
+          {group.examName ?? 'Exam Session'}
+        </AppText>
+        <AppText variant="caption" color={COLORS.muted} style={{ marginTop: 2 }}>
+          {group.latestDate}
+        </AppText>
+        <View style={s.examBadgeRow}>
+          {group.highCount > 0 && (
+            <View style={[s.examBadge, { backgroundColor: SEV_CFG.High.bg, borderColor: SEV_CFG.High.border }]}>
+              <AppText style={[s.examBadgeText, { color: SEV_CFG.High.color }]}>{group.highCount} HIGH</AppText>
+            </View>
+          )}
+          {group.medCount > 0 && (
+            <View style={[s.examBadge, { backgroundColor: SEV_CFG.Medium.bg, borderColor: SEV_CFG.Medium.border }]}>
+              <AppText style={[s.examBadgeText, { color: SEV_CFG.Medium.color }]}>{group.medCount} MEDIUM</AppText>
+            </View>
+          )}
+          <View style={[s.examBadge, { backgroundColor: 'rgba(241,245,255,0.05)', borderColor: COLORS.border }]}>
+            <AppText style={[s.examBadgeText, { color: COLORS.muted }]}>{group.violations.length} total</AppText>
+          </View>
+        </View>
+      </View>
+
+      <AppText style={s.chevron}>›</AppText>
+    </TouchableOpacity>
   );
 }
 
@@ -331,13 +386,11 @@ function ViolationCard({
       activeOpacity={0.78}
       style={[s.card, { borderLeftColor: sev.color }]}
     >
-      {/* Icon bubble + content + chevron */}
       <View style={[s.cardIconBubble, { backgroundColor: sev.bg, borderColor: sev.border }]}>
         <AppText style={s.cardIcon}>{type.icon}</AppText>
       </View>
 
       <View style={s.cardContent}>
-        {/* Type + severity badge */}
         <View style={s.cardTopRow}>
           <AppText variant="semi" color={COLORS.whiteSoft} style={{ flex: 1 }} numberOfLines={1}>
             {item.type}
@@ -347,16 +400,6 @@ function ViolationCard({
           </View>
         </View>
 
-        {/* Exam name */}
-        <AppText
-          variant="caption"
-          color="rgba(241,245,255,0.60)"
-          numberOfLines={1}
-        >
-          {item.exam}
-        </AppText>
-
-        {/* Timestamp + review status */}
         <View style={s.cardBottomRow}>
           <AppText variant="caption" color={COLORS.muted}>
             {item.timestamp}
@@ -419,35 +462,99 @@ const FILTER_OPTIONS: { key: FilterKey; label: string; accentColor?: string }[] 
 
 // ── Main screen ─────────────────────────────────────────────────────────────────
 export default function ViolationHistoryScreen({ embedded = false }: { embedded?: boolean }) {
-  const [violations, setViolations] = useState<ViolationRecord[]>([]);
-  const [loading, setLoading]       = useState(true);
-  const [error, setError]           = useState<string | null>(null);
-  const [filter, setFilter]         = useState<FilterKey>('all');
-  const [selected, setSelected]     = useState<ViolationRecord | null>(null);
+  const { authState } = useAuth();
+  const studentId = authState.user?.id ?? '';
 
-  const load = async () => {
+  const [violations, setViolations]       = useState<ViolationRecord[]>([]);
+  const [loading, setLoading]             = useState(true);
+  const [error, setError]                 = useState<string | null>(null);
+  const [filter, setFilter]               = useState<FilterKey>('all');
+  const [selected, setSelected]           = useState<ViolationRecord | null>(null);
+  const [view, setView]                   = useState<ViewState>('exams');
+  const [selectedGroup, setSelectedGroup] = useState<ExamGroup | null>(null);
+
+  const load = useCallback(async () => {
+    if (!studentId) return;
     setLoading(true);
     setError(null);
     try {
-      const logs = await getStudentViolations();
-      setViolations(logs.map(toDisplay));
+      const logs = await getStudentViolations(studentId);
+      const records = logs.map(toDisplay);
+
+      // Resolve exam names for each unique participationId
+      const uniqueIds = [...new Set(records.map((r) => r.participationId))];
+      const nameMap = new Map<string, string>();
+      await Promise.all(
+        uniqueIds.map(async (pid) => {
+          const detail = await getParticipationDetail(pid);
+          const name = detail?.examName ?? null;
+          if (name) nameMap.set(pid, name);
+        }),
+      );
+
+      setViolations(
+        records.map((r) =>
+          nameMap.has(r.participationId) ? { ...r, exam: nameMap.get(r.participationId)! } : r,
+        ),
+      );
     } catch (e: any) {
       setError(e.message ?? 'Failed to load violations');
     } finally {
       setLoading(false);
     }
-  };
+  }, [studentId]);
 
   useEffect(() => { load(); }, []);
 
-  const filtered = useMemo(
-    () => filter === 'all' ? violations : violations.filter((v) => v.severity === filter),
-    [filter, violations],
-  );
+  // Group violations by participationId
+  const examGroups = useMemo<ExamGroup[]>(() => {
+    const map = new Map<string, ViolationRecord[]>();
+    for (const v of violations) {
+      if (!map.has(v.participationId)) map.set(v.participationId, []);
+      map.get(v.participationId)!.push(v);
+    }
+    return Array.from(map.entries())
+      .map(([participationId, items]) => {
+        const sorted = [...items].sort(
+          (a, b) => new Date(b.rawDate).getTime() - new Date(a.rawDate).getTime(),
+        );
+        const latest = new Date(sorted[0].rawDate);
+        return {
+          participationId,
+          examName:   sorted[0].exam ?? null,
+          latestDate: latest.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+          latestRaw:  sorted[0].rawDate,
+          violations: sorted,
+          highCount:  items.filter((v) => v.severity === 'High').length,
+          medCount:   items.filter((v) => v.severity === 'Medium').length,
+        };
+      })
+      .sort((a, b) => new Date(b.latestRaw).getTime() - new Date(a.latestRaw).getTime());
+  }, [violations]);
+
+  const filtered = useMemo(() => {
+    if (!selectedGroup) return [];
+    return filter === 'all'
+      ? selectedGroup.violations
+      : selectedGroup.violations.filter((v) => v.severity === filter);
+  }, [filter, selectedGroup]);
 
   const highCount    = violations.filter((v) => v.severity === 'High').length;
   const medCount     = violations.filter((v) => v.severity === 'Medium').length;
   const pendingCount = violations.filter((v) => v.status === 'Pending Review').length;
+
+  function goToExams() {
+    setView('exams');
+    setSelectedGroup(null);
+    setFilter('all');
+    setSelected(null);
+  }
+
+  function openGroup(group: ExamGroup) {
+    setSelectedGroup(group);
+    setFilter('all');
+    setView('violations');
+  }
 
   const innerContent = (
     <>
@@ -463,9 +570,9 @@ export default function ViolationHistoryScreen({ embedded = false }: { embedded?
           <AppText variant="caption" color={COLORS.muted} style={{ textAlign: 'center', marginBottom: 20 }}>{error}</AppText>
           <Button label="Retry" onPress={load} style={{ width: 140 }} />
         </View>
-      ) : (
+      ) : view === 'exams' ? (
         <>
-          {/* Severity summary chips */}
+          {/* Summary chips */}
           <View style={s.summaryRow}>
             {[
               { label: 'High',   count: highCount, sev: SEV_CFG.High   },
@@ -482,24 +589,69 @@ export default function ViolationHistoryScreen({ embedded = false }: { embedded?
             </View>
           </View>
 
-          {/* Filter row */}
+          <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={s.scroll}>
+            <AppText variant="caption" color={COLORS.muted} style={{ marginBottom: 10 }}>
+              {examGroups.length} {examGroups.length === 1 ? 'exam' : 'exams'}
+            </AppText>
+            {examGroups.length === 0 ? (
+              <View style={s.empty}>
+                <AppText style={{ fontSize: 36, lineHeight: 52, marginBottom: 6 }}>✅</AppText>
+                <AppText variant="semi" color={COLORS.whiteSoft}>No violations</AppText>
+                <AppText variant="caption" color={COLORS.muted} style={{ marginTop: 4, textAlign: 'center' }}>
+                  No AI-detected violations on record
+                </AppText>
+              </View>
+            ) : (
+              <View style={s.list}>
+                {examGroups.map((group) => (
+                  <ExamCard key={group.participationId} group={group} onPress={() => openGroup(group)} />
+                ))}
+              </View>
+            )}
+            <View style={{ height: 32 }} />
+          </ScrollView>
+        </>
+      ) : (
+        <>
+          {/* Back bar */}
+          <TouchableOpacity onPress={goToExams} activeOpacity={0.75} style={s.backBar}>
+            <AppText style={s.backIcon}>‹</AppText>
+            <AppText variant="semi" color={COLORS.blueBright} style={{ fontSize: 14 }}>All Exams</AppText>
+          </TouchableOpacity>
+
+          {/* Exam name sub-header */}
+          <View style={s.examSubHeader}>
+            <AppText variant="semi" color={COLORS.whiteSoft} numberOfLines={2}>
+              {selectedGroup?.examName ?? 'Exam Session'}
+            </AppText>
+            <AppText variant="caption" color={COLORS.muted} style={{ marginTop: 2 }}>
+              {selectedGroup?.latestDate}
+            </AppText>
+          </View>
+
+          {/* Filter pills */}
           <View style={s.filterRow}>
             {FILTER_OPTIONS.map((f) => (
-              <FilterPill key={f.key} label={f.label} active={filter === f.key} accentColor={f.accentColor} onPress={() => setFilter(f.key)} />
+              <FilterPill
+                key={f.key}
+                label={f.label}
+                active={filter === f.key}
+                accentColor={f.accentColor}
+                onPress={() => setFilter(f.key)}
+              />
             ))}
           </View>
 
-          {/* List */}
           <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={s.scroll}>
             <AppText variant="caption" color={COLORS.muted} style={{ marginBottom: 10 }}>
               {filtered.length} {filtered.length === 1 ? 'violation' : 'violations'}
             </AppText>
             {filtered.length === 0 ? (
               <View style={s.empty}>
-                <AppText style={{ fontSize: 36, marginBottom: 10 }}>✅</AppText>
+                <AppText style={{ fontSize: 36, lineHeight: 52, marginBottom: 6 }}>✅</AppText>
                 <AppText variant="semi" color={COLORS.whiteSoft}>No violations</AppText>
                 <AppText variant="caption" color={COLORS.muted} style={{ marginTop: 4, textAlign: 'center' }}>
-                  No AI-detected violations on record
+                  No violations matching this filter
                 </AppText>
               </View>
             ) : (
@@ -575,6 +727,30 @@ const s = StyleSheet.create({
     color: COLORS.gold,
   },
 
+  // Back bar
+  backBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    gap: 4,
+  },
+  backIcon: {
+    fontFamily: FONTS.bodyBold,
+    fontSize: 22,
+    color: COLORS.blueBright,
+    lineHeight: 28,
+  },
+
+  // Exam sub-header (violations view)
+  examSubHeader: {
+    paddingHorizontal: 20,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+    marginBottom: 12,
+  },
+
   // Summary chips
   summaryRow: {
     flexDirection: 'row',
@@ -623,6 +799,49 @@ const s = StyleSheet.create({
   // Scroll + list
   scroll: { paddingHorizontal: 20 },
   list: { gap: 10 },
+
+  // Exam card
+  examCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: COLORS.navyCard,
+    borderRadius: RADIUS.lg,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderLeftWidth: 3,
+    padding: 14,
+  },
+  examIconBubble: {
+    width: 48,
+    height: 48,
+    borderRadius: RADIUS.md,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  examCardContent: {
+    flex: 1,
+    gap: 4,
+  },
+  examBadgeRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 5,
+    marginTop: 4,
+  },
+  examBadge: {
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: RADIUS.xs,
+    borderWidth: 1,
+  },
+  examBadgeText: {
+    fontFamily: FONTS.bodySemi,
+    fontSize: 9,
+    letterSpacing: 0.4,
+  },
 
   // Violation card
   card: {
@@ -711,7 +930,6 @@ const md = StyleSheet.create({
     marginBottom: 4,
   },
 
-  // Sheet header
   sheetHeaderGrad: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -738,7 +956,6 @@ const md = StyleSheet.create({
   },
   sevBadgeText: { fontFamily: FONTS.bodySemi, fontSize: 10, letterSpacing: 0.5 },
 
-  // Evidence
   evidenceSection: {
     paddingHorizontal: 20,
     paddingBottom: 16,
@@ -746,7 +963,6 @@ const md = StyleSheet.create({
     borderBottomColor: COLORS.border,
   },
 
-  // Details grid
   detailsGrid: {
     paddingHorizontal: 20,
     paddingVertical: 16,
@@ -768,7 +984,6 @@ const md = StyleSheet.create({
   },
   reviewBadgeText: { fontFamily: FONTS.bodySemi, fontSize: 11 },
 
-  // Description
   descSection: {
     paddingHorizontal: 20,
     paddingVertical: 16,
@@ -780,115 +995,48 @@ const md = StyleSheet.create({
     padding: 14,
   },
 
-  // Close
   closeSection: {
     paddingHorizontal: 20,
     paddingTop: 4,
   },
 });
 
-// ── Evidence snapshot styles ────────────────────────────────────────────────────
+// ── Evidence styles ─────────────────────────────────────────────────────────────
 const ev = StyleSheet.create({
-  root: {
-    borderRadius: RADIUS.lg,
-    overflow: 'hidden',
-  },
-  cameraFrame: {
+  root: { borderRadius: RADIUS.lg, overflow: 'hidden' },
+
+  evidenceImage: {
+    width: '100%',
     height: 200,
-    backgroundColor: '#040810',
-    alignItems: 'center',
-    justifyContent: 'center',
     borderRadius: RADIUS.lg,
-    overflow: 'hidden',
   },
-  corner: {
+  evidenceBadge: {
     position: 'absolute',
-    width: 22,
-    height: 22,
-  },
-
-  // REC indicator
-  recRow: {
-    position: 'absolute',
-    top: 12,
-    left: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-  },
-  recDot: {
-    width: 7,
-    height: 7,
+    bottom: 8,
+    left: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
     borderRadius: RADIUS.full,
-    backgroundColor: COLORS.red,
-  },
-  recText: {
-    fontFamily: FONTS.bodySemi,
-    fontSize: 10,
-    color: COLORS.red,
-    letterSpacing: 1,
-  },
-
-  // Oval
-  oval: {
-    width: 100,
-    height: 130,
-    borderRadius: 50,
-    borderWidth: 2,
-    alignItems: 'center',
-    justifyContent: 'center',
-    overflow: 'hidden',
-  },
-  violationIcon: {
-    fontSize: 32,
-  },
-  ovalOverlay: {
-    position: 'absolute',
-    bottom: 0,
-    right: 0,
-    width: 26,
-    height: 26,
-    borderRadius: RADIUS.full,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  ovalOverlayIcon: {
-    fontSize: 13,
-    color: '#fff',
-  },
-
-  // Bottom bar
-  bottomBar: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: 'rgba(4,8,16,0.75)',
-  },
-  timeStamp: {
-    fontFamily: FONTS.body,
-    fontSize: 11,
-    color: 'rgba(241,245,255,0.70)',
-    letterSpacing: 0.3,
-  },
-  typeChip: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: RADIUS.xs,
     borderWidth: 1,
   },
-  typeChipText: {
-    fontFamily: FONTS.bodySemi,
-    fontSize: 9,
-    letterSpacing: 0.5,
+  evidenceBadgeText: { fontFamily: FONTS.bodySemi, fontSize: 10 },
+
+  videoPlayer: {
+    width: '100%',
+    height: 220,
+    borderRadius: RADIUS.lg,
+    backgroundColor: '#000',
+    overflow: 'hidden',
+  },
+  videoThumb: {
+    height: 180,
+    backgroundColor: '#040810',
+    borderRadius: RADIUS.lg,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    overflow: 'hidden',
   },
 
-  // No evidence
   noEvidenceBox: {
     height: 160,
     backgroundColor: 'rgba(241,245,255,0.04)',
