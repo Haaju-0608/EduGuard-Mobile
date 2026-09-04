@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -11,34 +11,51 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { LinearGradient } from 'expo-linear-gradient';
-import * as ImagePicker from 'expo-image-picker';
 import { AppText } from '../../components/ui/AppText';
 import { Button } from '../../components/ui/Button';
 import { COLORS, FONTS, RADIUS } from '../../constants/theme';
+import FaceScanWebView, { FaceScanWebViewHandle } from '../../components/attendance/FaceScanWebView';
 import {
   AttendanceClass,
   AttendanceRecord,
   AttendanceSession,
   ClassEnrollment,
   ExamSlotBrief,
+  closeAttendanceSession,
   createAttendanceRecord,
   getClassEnrollments,
   getExamSlotsForClass,
   getInProgressSessionForClass,
+  getLatestSessionForClass,
   getLecturerClasses,
   getSessionRecords,
+  markAttendanceByAiPhoto,
   openAttendanceSession,
   updateAttendanceRecord,
-  uploadAttendanceVideo,
 } from '../../api/attendance';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+interface ScanFeedback {
+  kind: 'success' | 'warn' | 'miss' | 'error';
+  message: string;
+}
+
 type Phase =
   | { tag: 'classes'; refreshing: boolean }
   | { tag: 'exams'; cls: AttendanceClass; exams: ExamSlotBrief[]; loading: boolean; error: string | null }
-  | { tag: 'video-pick'; cls: AttendanceClass; exam: ExamSlotBrief; sessionId: string }
-  | { tag: 'uploading'; cls: AttendanceClass; exam: ExamSlotBrief }
+  | { tag: 'roster'; cls: AttendanceClass; exam: ExamSlotBrief; enrollments: ClassEnrollment[]; session: AttendanceSession | null; records: AttendanceRecord[]; loading: boolean; toggling: string | null }
+  | { tag: 'opening'; cls: AttendanceClass; exam: ExamSlotBrief }
+  | {
+      tag: 'scanning';
+      cls: AttendanceClass;
+      exam: ExamSlotBrief;
+      sessionId: string;
+      records: AttendanceRecord[];
+      enrollments: ClassEnrollment[];
+      lastResult: ScanFeedback | null;
+      manualPaused: boolean;
+    }
   | {
       tag: 'results';
       cls: AttendanceClass;
@@ -82,13 +99,14 @@ function initials(name: string) {
 }
 
 function mergeResults(records: AttendanceRecord[], enrollments: ClassEnrollment[]) {
+  const validRecords = records.filter(Boolean);
   return enrollments
     .filter((e) => e.status === 'Active')
     .map((e) => ({
       studentId:   e.studentId,
       fullName:    e.student.fullName,
       studentCode: e.student.studentCode,
-      record:      records.find((r) => r.studentId === e.studentId) ?? null,
+      record:      validRecords.find((r) => r.studentId === e.studentId) ?? null,
     }))
     .sort((a, b) => {
       const aP = a.record?.status === 'Present' ? 0 : 1;
@@ -185,8 +203,8 @@ interface StudentRow {
   record: AttendanceRecord | null;
 }
 
-function StudentToggleRow({ row, toggling, onToggle }: {
-  row: StudentRow; toggling: boolean; onToggle: (row: StudentRow) => void;
+function StudentToggleRow({ row, toggling, disabled, onToggle }: {
+  row: StudentRow; toggling: boolean; disabled?: boolean; onToggle: (row: StudentRow) => void;
 }) {
   const isPresent = row.record?.status === 'Present';
   const sc = isPresent
@@ -220,12 +238,14 @@ function StudentToggleRow({ row, toggling, onToggle }: {
         <AppText style={[s.statusLabel, { color: sc.color }]}>{sc.label}</AppText>
       </View>
       <TouchableOpacity
-        onPress={() => !toggling && onToggle(row)}
-        activeOpacity={0.7} style={s.toggleBtn} disabled={toggling}
+        onPress={() => !toggling && !disabled && onToggle(row)}
+        activeOpacity={disabled ? 1 : 0.7}
+        style={[s.toggleBtn, disabled && { opacity: 0.35 }]}
+        disabled={toggling || disabled}
       >
         {toggling
           ? <ActivityIndicator size="small" color={COLORS.muted} />
-          : <AppText style={{ fontSize: 16, color: COLORS.muted }}>⇄</AppText>}
+          : <AppText style={{ fontSize: 16, color: COLORS.muted }}>{disabled ? '🔒' : '⇄'}</AppText>}
       </TouchableOpacity>
     </View>
   );
@@ -279,87 +299,110 @@ export default function AttendanceScreen() {
   // ── Select exam → open session ─────────────────────────────────────────────
 
   const handleSelectExam = async (cls: AttendanceClass, exam: ExamSlotBrief) => {
-    Alert.alert(
-      'Start Attendance',
-      `Start attendance for "${exam.examName}"?\n\nYou will then select a video to upload.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Start', onPress: async () => {
-            setPhase({ tag: 'uploading', cls, exam });
-            try {
-              const session = await openAttendanceSession(cls.id, exam.id);
-              setPhase({ tag: 'video-pick', cls, exam, sessionId: session.id });
-            } catch (e: any) {
-              const alreadyOpen = /already has an in-progress/i.test(e.message ?? '');
-              const reloadedExams = await getExamSlotsForClass(cls.id).catch(() => []);
-
-              if (alreadyOpen) {
-                const existing = await getInProgressSessionForClass(cls.id);
-                if (existing) {
-                  setPhase({ tag: 'exams', cls, exams: reloadedExams, loading: false, error: null });
-                  Alert.alert(
-                    'Session Already Open',
-                    'This class has an ongoing attendance session.',
-                    [
-                      { text: 'Cancel', style: 'cancel' },
-                      {
-                        text: 'View Results',
-                        onPress: async () => {
-                          setPhase({ tag: 'uploading', cls, exam });
-                          try {
-                            const [existingRecords, enrollments] = await Promise.all([
-                              getSessionRecords(existing.id),
-                              getClassEnrollments(cls.id),
-                            ]);
-                            setPhase({ tag: 'results', cls, exam, sessionId: existing.id, records: existingRecords, enrollments, toggling: null });
-                          } catch {
-                            setPhase({ tag: 'video-pick', cls, exam, sessionId: existing.id });
-                          }
-                        },
-                      },
-                    ],
-                  );
-                  return;
-                }
-              }
-
-              setPhase({ tag: 'exams', cls, exams: reloadedExams, loading: false, error: null });
-              Alert.alert('Failed to Open Session', e.message ?? 'Please try again.');
-            }
-          },
-        },
-      ],
-    );
+    setPhase({ tag: 'roster', cls, exam, enrollments: [], session: null, records: [], loading: true, toggling: null });
+    try {
+      // Lấy session GẦN NHẤT (bất kể status) để luôn có điểm danh mà hiện — kể cả vừa End Session
+      // xong (Completed) vẫn phải thấy đúng ai Present/Absent, không phải cứ hết InProgress là roster
+      // trắng trơn. "session" trong phase chỉ giữ session InProgress thật (quyết định hiện nút Resume/
+      // End hay Start) — tách riêng khỏi việc có record gì để hiện.
+      const [enrollments, latestSession] = await Promise.all([
+        getClassEnrollments(cls.id).catch(() => [] as ClassEnrollment[]),
+        getLatestSessionForClass(cls.id),
+      ]);
+      const activeSession = latestSession?.status === 'InProgress' ? latestSession : null;
+      const records = latestSession ? await getSessionRecords(latestSession.id).catch(() => [] as AttendanceRecord[]) : [];
+      setPhase({ tag: 'roster', cls, exam, enrollments, session: activeSession, records, loading: false, toggling: null });
+    } catch (e: any) {
+      Alert.alert('Error', e.message ?? 'Failed to load roster.');
+      setPhase({ tag: 'exams', cls, exams: [], loading: false, error: null });
+    }
   };
 
-  // ── Pick & upload video ────────────────────────────────────────────────────
-
-  const handlePickVideo = async (cls: AttendanceClass, exam: ExamSlotBrief, sessionId: string) => {
-    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!perm.granted) {
-      Alert.alert('Permission Required', 'Please allow access to your media library.');
+  const handleStartFromRoster = async () => {
+    if (phase.tag !== 'roster') return;
+    const { cls, exam, session, enrollments } = phase;
+    if (session) {
+      const records = await getSessionRecords(session.id).catch(() => [] as AttendanceRecord[]);
+      setPhase({ tag: 'scanning', cls, exam, sessionId: session.id, records, enrollments, lastResult: null, manualPaused: false });
       return;
     }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: 'videos' as any,
-      allowsEditing: false,
-      quality: 1,
-    });
-    if (result.canceled) return;
-
-    setPhase({ tag: 'uploading', cls, exam });
+    setPhase({ tag: 'opening', cls, exam });
     try {
-      const [aiRecords, enrollments] = await Promise.all([
-        uploadAttendanceVideo(sessionId, result.assets[0].uri),
-        getClassEnrollments(cls.id),
-      ]);
-      setPhase({ tag: 'results', cls, exam, sessionId, records: aiRecords, enrollments, toggling: null });
+      const newSession = await openAttendanceSession(cls.id, exam.id);
+      setPhase({ tag: 'scanning', cls, exam, sessionId: newSession.id, records: [], enrollments, lastResult: null, manualPaused: false });
     } catch (e: any) {
-      Alert.alert('Upload Failed', e.message ?? 'Please try again.', [
-        { text: 'Retry', onPress: () => setPhase({ tag: 'video-pick', cls, exam, sessionId }) },
-        { text: 'Back',  onPress: () => setPhase({ tag: 'classes', refreshing: false }) },
+      const alreadyOpen = /already has an in-progress/i.test(e.message ?? '');
+      if (alreadyOpen) {
+        const existing = await getInProgressSessionForClass(cls.id);
+        if (existing) {
+          const records = await getSessionRecords(existing.id).catch(() => [] as AttendanceRecord[]);
+          setPhase({ tag: 'scanning', cls, exam, sessionId: existing.id, records, enrollments, lastResult: null, manualPaused: false });
+          return;
+        }
+      }
+      setPhase({ tag: 'roster', cls, exam, enrollments, session: null, records: [], loading: false, toggling: null });
+      Alert.alert('Failed to Open Session', e.message ?? 'Please try again.');
+    }
+  };
+
+  // ── Live face-scan capture ─────────────────────────────────────────────────
+
+  const scanRef = useRef<FaceScanWebViewHandle>(null);
+
+  const handleFaceCaptured = async (dataUrl: string) => {
+    if (phase.tag !== 'scanning') return;
+    const { sessionId } = phase;
+    try {
+      const result = await markAttendanceByAiPhoto(sessionId, dataUrl);
+      setPhase((prev) => {
+        if (prev.tag !== 'scanning') return prev;
+        let records = prev.records;
+        let feedback: ScanFeedback;
+        if (result.isMatch && result.record) {
+          const idx = records.findIndex((r) => r.studentId === result.record!.studentId);
+          records = idx >= 0
+            ? records.map((r, i) => (i === idx ? result.record! : r))
+            : [...records, result.record!];
+          feedback = { kind: 'success', message: `${result.studentName ?? 'Student'} marked Present` };
+        } else if (result.matchedButWrongClass) {
+          feedback = { kind: 'warn', message: 'Face matched but not enrolled in this class.' };
+        } else {
+          feedback = { kind: 'miss', message: 'No matching face found. Try again.' };
+        }
+        return { ...prev, records, lastResult: feedback };
+      });
+    } catch {
+      setPhase((prev) => (prev.tag === 'scanning' ? { ...prev, lastResult: { kind: 'miss', message: 'Could not scan. Please try again.' } } : prev));
+    } finally {
+      scanRef.current?.resume(1500);
+      setTimeout(() => {
+        setPhase((prev) => (prev.tag === 'scanning' ? { ...prev, lastResult: null } : prev));
+      }, 2600);
+    }
+  };
+
+  const toggleManualPause = () => {
+    if (phase.tag !== 'scanning') return;
+    const next = !phase.manualPaused;
+    if (next) scanRef.current?.pause();
+    else scanRef.current?.unpause();
+    setPhase({ ...phase, manualPaused: next });
+  };
+
+  const handleFinishScanning = async () => {
+    if (phase.tag !== 'scanning') return;
+    const { cls, exam, sessionId, records, enrollments } = phase;
+    setPhase({ tag: 'roster', cls, exam, enrollments, session: null, records, loading: true, toggling: null });
+    try {
+      const [freshRecords, freshSession] = await Promise.all([
+        getSessionRecords(sessionId),
+        getInProgressSessionForClass(cls.id),
       ]);
+      const session = freshSession ?? { id: sessionId, classId: cls.id, status: 'InProgress' as const, startTime: new Date().toISOString(), endTime: null, totalRecognized: 0, videoPath: null };
+      setPhase({ tag: 'roster', cls, exam, enrollments, session, records: freshRecords, loading: false, toggling: null });
+    } catch {
+      const session = { id: sessionId, classId: cls.id, status: 'InProgress' as const, startTime: new Date().toISOString(), endTime: null, totalRecognized: 0, videoPath: null };
+      setPhase({ tag: 'roster', cls, exam, enrollments, session, records, loading: false, toggling: null });
     }
   };
 
@@ -390,15 +433,28 @@ export default function AttendanceScreen() {
   const goBack = () => {
     if (phase.tag === 'exams') {
       setPhase({ tag: 'classes', refreshing: false });
+    } else if (phase.tag === 'roster') {
+      setPhase({ tag: 'exams', cls: phase.cls, exams: [], loading: true, error: null });
+      getExamSlotsForClass(phase.cls.id).then((exams) => {
+        setPhase({ tag: 'exams', cls: phase.cls, exams, loading: false, error: null });
+      }).catch((e) => {
+        setPhase({ tag: 'exams', cls: phase.cls, exams: [], loading: false, error: e.message });
+      });
     } else if (phase.tag === 'results') {
       setPhase({ tag: 'classes', refreshing: false });
-    } else if (phase.tag === 'video-pick') {
+    } else if (phase.tag === 'scanning') {
+      const { cls, exam, sessionId, records, enrollments } = phase;
       Alert.alert(
-        'Cancel?',
-        'The session will remain open. Leave without completing attendance?',
+        'Stop Scanning?',
+        'The session will remain open. You can resume it later.',
         [
           { text: 'Stay', style: 'cancel' },
-          { text: 'Leave', style: 'destructive', onPress: () => setPhase({ tag: 'classes', refreshing: false }) },
+          {
+            text: 'Leave', style: 'destructive', onPress: () => {
+              const session: AttendanceSession = { id: sessionId, classId: cls.id, status: 'InProgress', startTime: '', endTime: null, totalRecognized: 0, videoPath: null };
+              setPhase({ tag: 'roster', cls, exam, enrollments, session, records, loading: false, toggling: null });
+            },
+          },
         ],
       );
     }
@@ -529,85 +585,209 @@ export default function AttendanceScreen() {
       );
     }
 
-    // ── Phase 3: Video pick ──────────────────────────────────────────────────
-    if (phase.tag === 'video-pick') {
-      const { cls, exam, sessionId } = phase;
+    // ── Phase 2b: Roster ──────────────────────────────────────────────────────
+    if (phase.tag === 'roster') {
+      const { cls, exam, enrollments, session, records, loading, toggling } = phase;
+      const rows = mergeResults(records, enrollments);
+      const presentCount = rows.filter((r) => r.record?.status === 'Present').length;
+
+      const handleRosterToggle = async (row: StudentRow) => {
+        if (phase.tag !== 'roster' || !session) return;
+        setPhase({ ...phase, toggling: row.studentId });
+        const newStatus = row.record?.status === 'Present' ? 'Absent' : 'Present';
+        const checkinAt = session.startTime || new Date().toISOString();
+        try {
+          let recordId = row.record?.id ?? null;
+          if (!recordId) {
+            const fresh = await getSessionRecords(session.id);
+            recordId = fresh.find((r) => r?.studentId === row.studentId)?.id ?? null;
+          }
+          if (recordId) {
+            await updateAttendanceRecord(recordId, newStatus, checkinAt);
+          } else {
+            await createAttendanceRecord(session.id, row.studentId, newStatus, checkinAt);
+          }
+          const newRecords = await getSessionRecords(session.id);
+          setPhase({ ...phase, records: newRecords, toggling: null });
+        } catch (e: any) {
+          Alert.alert('Update Failed', e.message ?? 'Could not update.');
+          setPhase({ ...phase, toggling: null });
+        }
+      };
+
       return (
         <>
           <View style={s.backRow}>
             <TouchableOpacity onPress={goBack} activeOpacity={0.7} style={s.backBtn}>
               <AppText style={s.backIcon}>‹</AppText>
-              <AppText variant="semi" color={COLORS.blueBright}>Back</AppText>
+              <AppText variant="semi" color={COLORS.blueBright}>Exams</AppText>
             </TouchableOpacity>
-            <View style={s.inProgressChip}>
-              <View style={s.liveDot} />
-              <AppText style={s.inProgressText}>Session Open</AppText>
-            </View>
           </View>
 
           <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={s.scroll}>
-            {/* Exam context */}
-            <View style={s.examContextCard}>
+            <View style={s.classInfoStrip}>
               <LinearGradient colors={[COLORS.blue, COLORS.cyan]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.accentBar} />
-              <AppText variant="caption" color={COLORS.muted} style={{ marginBottom: 4 }}>Taking attendance for</AppText>
-              <AppText variant="h3" color={COLORS.whiteSoft} numberOfLines={2}>{exam.examName}</AppText>
-              <AppText variant="caption" color={COLORS.muted} style={{ marginTop: 4 }}>
-                {cls.courseName}  ·  {fmtExamDate(exam.startTime)}
-              </AppText>
+              <AppText variant="semi" color={COLORS.whiteSoft} numberOfLines={1}>{exam.examName}</AppText>
+              <AppText variant="caption" color={COLORS.muted}>{cls.courseName}  ·  {fmtExamDate(exam.startTime)}</AppText>
             </View>
 
-            <View style={s.cameraIllustration}>
-              <View style={s.cameraOrb} />
-              <AppText style={s.cameraIcon}>🎬</AppText>
-              <AppText variant="semi" color={COLORS.whiteSoft} style={{ fontSize: 16, marginTop: 14 }}>
-                Select Classroom Video
-              </AppText>
-              <AppText variant="caption" color={COLORS.muted} style={{ textAlign: 'center', marginTop: 6, lineHeight: 20 }}>
-                Pick a 5–10 second video panning across all students in the room
-              </AppText>
-            </View>
+            {loading ? (
+              <View style={{ paddingVertical: 48, alignItems: 'center' }}>
+                <ActivityIndicator size="large" color={COLORS.cyan} />
+                <AppText variant="caption" color={COLORS.muted} style={{ marginTop: 12 }}>Loading students…</AppText>
+              </View>
+            ) : (
+              <>
+                {!session && (
+                  <View style={s.noSessionBanner}>
+                    <AppText style={{ fontSize: 14 }}>🔒</AppText>
+                    <AppText variant="caption" color={COLORS.gold} style={{ flex: 1 }}>
+                      No active session — tap "Start Attendance" below before marking students by hand.
+                    </AppText>
+                  </View>
+                )}
 
-            <View style={s.tipsCard}>
-              <AppText variant="label" color={COLORS.muted} style={{ letterSpacing: 1, marginBottom: 8 }}>TIPS</AppText>
-              {[
-                '📷  Keep camera steady while panning',
-                '💡  Ensure good lighting',
-                '👤  Faces should be clearly visible',
-                '⏱  5–10 seconds is ideal',
-              ].map((tip, i) => (
-                <AppText key={i} variant="caption" color="rgba(241,245,255,0.55)" style={{ marginTop: 5 }}>{tip}</AppText>
-              ))}
-            </View>
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                  <AppText variant="caption" color={COLORS.muted}>
+                    {presentCount}/{rows.length} present
+                  </AppText>
+                  {session && (
+                    <AppText variant="caption" color={COLORS.muted}>Tap ⇄ to override</AppText>
+                  )}
+                </View>
 
-            <Button
-              label="Select Video from Gallery"
-              onPress={() => handlePickVideo(cls, exam, sessionId)}
-              style={{ width: '100%' }}
-            />
-            <View style={{ height: 32 }} />
+                <View style={s.studentList}>
+                  {rows.map((row) => (
+                    <StudentToggleRow
+                      key={row.studentId}
+                      row={row}
+                      disabled={!session}
+                      toggling={toggling === row.studentId}
+                      onToggle={session ? handleRosterToggle : () => {}}
+                    />
+                  ))}
+                </View>
+              </>
+            )}
+
+            <View style={{ height: 24 }} />
           </ScrollView>
+
+          <View style={{ paddingHorizontal: 20, paddingBottom: 16, gap: 10 }}>
+            <Button
+              label={session ? '📸  Resume Scanning' : '📸  Start Attendance'}
+              onPress={handleStartFromRoster}
+            />
+            {session && (
+              <TouchableOpacity
+                activeOpacity={0.75}
+                style={s.endSessionBtn}
+                onPress={() => {
+                  Alert.alert(
+                    'End Session',
+                    'This will mark the session as Completed. You won\'t be able to scan more faces after this.',
+                    [
+                      { text: 'Cancel', style: 'cancel' },
+                      {
+                        text: 'End Session', style: 'destructive', onPress: async () => {
+                          try {
+                            await closeAttendanceSession(session.id);
+                          } catch (e: any) {
+                            if (!/already closed/i.test(e.message ?? '')) {
+                              Alert.alert('Failed', e.message ?? 'Could not end session.');
+                              return;
+                            }
+                          }
+                          setPhase({ tag: 'classes', refreshing: false });
+                        },
+                      },
+                    ],
+                  );
+                }}
+              >
+                <AppText style={s.endSessionText}>End Session</AppText>
+              </TouchableOpacity>
+            )}
+          </View>
         </>
       );
     }
 
-    // ── Phase 4: Uploading / processing ─────────────────────────────────────
-    if (phase.tag === 'uploading') {
+    // ── Phase 3: Opening session ──────────────────────────────────────────────
+    if (phase.tag === 'opening') {
       const { exam } = phase;
       return (
         <View style={s.center}>
           <View style={s.uploadingOrbWrap}>
             <View style={s.uploadingOrb} />
-            <AppText style={{ fontSize: 48, zIndex: 1 }}>🤖</AppText>
+            <AppText style={{ fontSize: 48, zIndex: 1 }}>📸</AppText>
           </View>
-          <AppText variant="h3" color={COLORS.whiteSoft} style={{ marginTop: 24, marginBottom: 4 }}>AI Processing</AppText>
-          <AppText variant="caption" color={COLORS.muted} style={{ textAlign: 'center', marginBottom: 6 }}>
+          <AppText variant="h3" color={COLORS.whiteSoft} style={{ marginTop: 24, marginBottom: 4 }}>Opening Session</AppText>
+          <AppText variant="caption" color={COLORS.muted} style={{ textAlign: 'center', marginBottom: 24 }}>
             {exam.examName}
           </AppText>
-          <AppText variant="caption" color={COLORS.muted} style={{ textAlign: 'center', marginBottom: 24 }}>
-            Scanning faces every 0.5 seconds…{'\n'}This may take a moment.
-          </AppText>
           <ActivityIndicator size="large" color={COLORS.cyan} />
-          <AppText variant="caption" color="rgba(241,245,255,0.25)" style={{ marginTop: 20 }}>Do not close the app</AppText>
+        </View>
+      );
+    }
+
+    // ── Phase 4: Live face scan ───────────────────────────────────────────────
+    if (phase.tag === 'scanning') {
+      const { exam, records, enrollments, lastResult, manualPaused } = phase;
+      const activeCount = enrollments.filter((e) => e.status === 'Active').length;
+      const presentCount = records.filter((r) => r.status === 'Present').length;
+      // Hex (not COLORS.muted's rgba string) so the '+alpha' suffix trick below stays valid.
+      const feedbackColor =
+        lastResult?.kind === 'success' ? COLORS.green :
+        lastResult?.kind === 'warn'    ? COLORS.gold :
+        lastResult?.kind === 'error'   ? COLORS.red :
+        '#94A3B8';
+
+      return (
+        <View style={{ flex: 1 }}>
+          <View style={s.scanCameraWrap}>
+            <FaceScanWebView ref={scanRef} onCapture={handleFaceCaptured} />
+          </View>
+
+          <View style={s.scanOverlay} pointerEvents="box-none">
+            <View style={s.scanTopBar}>
+              <TouchableOpacity onPress={goBack} activeOpacity={0.7} style={s.scanBackBtn}>
+                <AppText style={s.backIcon}>‹</AppText>
+              </TouchableOpacity>
+              <View style={s.scanExamChip}>
+                <AppText variant="semi" color={COLORS.whiteSoft} numberOfLines={1} style={{ fontSize: 12 }}>
+                  {exam.examName}
+                </AppText>
+                <AppText variant="caption" color={COLORS.muted} style={{ fontSize: 10 }}>
+                  {presentCount}/{activeCount} present
+                </AppText>
+              </View>
+            </View>
+
+            <View style={{ flex: 1 }} />
+
+            {lastResult && (
+              <View style={[s.scanFeedback, { borderColor: feedbackColor + '55', backgroundColor: feedbackColor + '20' }]}>
+                <AppText style={[s.scanFeedbackText, { color: feedbackColor }]} numberOfLines={2}>
+                  {lastResult.message}
+                </AppText>
+              </View>
+            )}
+
+            <View style={s.scanBottomBar}>
+              <TouchableOpacity onPress={() => scanRef.current?.flip()} activeOpacity={0.75} style={s.scanIconBtn}>
+                <AppText style={{ fontSize: 18 }}>🔄</AppText>
+              </TouchableOpacity>
+              <Button
+                label="Finish"
+                onPress={handleFinishScanning}
+                style={{ flex: 1 }}
+              />
+              <TouchableOpacity onPress={toggleManualPause} activeOpacity={0.75} style={s.scanIconBtn}>
+                <AppText style={{ fontSize: 18 }}>{manualPaused ? '▶️' : '⏸️'}</AppText>
+              </TouchableOpacity>
+            </View>
+          </View>
         </View>
       );
     }
@@ -670,11 +850,14 @@ export default function AttendanceScreen() {
                 activeOpacity={0.75}
                 onPress={() => {
                   if (phase.tag !== 'results') return;
-                  setPhase({ tag: 'video-pick', cls: phase.cls, exam: phase.exam, sessionId: phase.sessionId });
+                  setPhase({
+                    tag: 'scanning', cls: phase.cls, exam: phase.exam, sessionId: phase.sessionId,
+                    records: phase.records, enrollments: phase.enrollments, lastResult: null, manualPaused: false,
+                  });
                 }}
                 style={s.rerunBtn}
               >
-                <AppText style={s.rerunText}>🎬 Re-run AI</AppText>
+                <AppText style={s.rerunText}>📸 Resume Scanning</AppText>
               </TouchableOpacity>
             </View>
 
@@ -738,31 +921,31 @@ const s = StyleSheet.create({
   errorCard: { alignItems: 'center', paddingVertical: 32, paddingHorizontal: 16 },
   emptyCard: { alignItems: 'center', paddingVertical: 32 },
 
-  // Video pick phase
-  examContextCard: {
-    backgroundColor: COLORS.navyCard, borderRadius: RADIUS.xl, borderWidth: 1,
-    borderColor: COLORS.border, padding: 16, paddingTop: 20, marginBottom: 20, overflow: 'hidden',
+  // Live face-scan phase
+  scanCameraWrap: { flex: 1, overflow: 'hidden', backgroundColor: '#000' },
+  scanOverlay:    { ...StyleSheet.absoluteFillObject, justifyContent: 'space-between' },
+  scanTopBar:     { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingTop: 10 },
+  scanBackBtn:    {
+    width: 36, height: 36, borderRadius: RADIUS.md, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(10,15,46,0.55)', borderWidth: 1, borderColor: 'rgba(241,245,255,0.15)',
   },
-  cameraIllustration: {
-    alignItems: 'center', paddingVertical: 28, marginBottom: 20,
-    backgroundColor: COLORS.navyCard, borderRadius: RADIUS['2xl'],
-    borderWidth: 1, borderColor: COLORS.border, overflow: 'hidden',
+  scanExamChip: {
+    flex: 1, backgroundColor: 'rgba(10,15,46,0.55)', borderRadius: RADIUS.lg,
+    borderWidth: 1, borderColor: 'rgba(241,245,255,0.15)', paddingHorizontal: 12, paddingVertical: 8, gap: 1,
   },
-  cameraOrb:  { position: 'absolute', width: 160, height: 160, borderRadius: 80, backgroundColor: 'rgba(37,99,235,0.08)' },
-  cameraIcon: { fontSize: 56, zIndex: 1 },
-  tipsCard: {
-    backgroundColor: COLORS.navyCard, borderRadius: RADIUS.xl, borderWidth: 1,
-    borderColor: COLORS.border, padding: 16, marginBottom: 20,
+  scanFeedback: {
+    marginHorizontal: 16, marginBottom: 12, borderRadius: RADIUS.lg, borderWidth: 1, paddingHorizontal: 14, paddingVertical: 10,
+  },
+  scanFeedbackText: { fontFamily: FONTS.bodySemi, fontSize: 13, textAlign: 'center' },
+  scanBottomBar: {
+    flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingBottom: 14,
+  },
+  scanIconBtn: {
+    width: 46, height: 46, borderRadius: RADIUS.full, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(10,15,46,0.55)', borderWidth: 1, borderColor: 'rgba(241,245,255,0.15)',
   },
 
   // Chips
-  inProgressChip: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: 'rgba(16,185,129,0.12)', borderRadius: RADIUS.full,
-    borderWidth: 1, borderColor: 'rgba(16,185,129,0.3)', paddingHorizontal: 10, paddingVertical: 5,
-  },
-  liveDot:        { width: 7, height: 7, borderRadius: 4, backgroundColor: COLORS.green },
-  inProgressText: { fontFamily: FONTS.bodySemi, fontSize: 11, color: COLORS.green },
   completedChip:  {
     backgroundColor: 'rgba(6,182,212,0.12)', borderRadius: RADIUS.full,
     borderWidth: 1, borderColor: 'rgba(6,182,212,0.3)', paddingHorizontal: 10, paddingVertical: 5,
@@ -790,6 +973,10 @@ const s = StyleSheet.create({
     overflow: 'hidden', backgroundColor: 'rgba(241,245,255,0.06)', gap: 2,
   },
 
+  noSessionBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 14, padding: 12,
+    borderRadius: RADIUS.lg, backgroundColor: 'rgba(245,158,11,0.08)', borderWidth: 1, borderColor: 'rgba(245,158,11,0.25)',
+  },
   studentList: { gap: 8 },
   studentRow:  {
     flexDirection: 'row', alignItems: 'center', gap: 10,
@@ -808,4 +995,6 @@ const s = StyleSheet.create({
   toggleBtn:    { width: 34, height: 34, borderRadius: RADIUS.md, backgroundColor: 'rgba(241,245,255,0.05)', borderWidth: 1, borderColor: COLORS.border, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
   rerunBtn:     { backgroundColor: 'rgba(37,99,235,0.12)', borderRadius: RADIUS.full, borderWidth: 1, borderColor: 'rgba(37,99,235,0.28)', paddingHorizontal: 10, paddingVertical: 5 },
   rerunText:    { fontFamily: FONTS.bodySemi, fontSize: 11, color: COLORS.blueBright },
+  endSessionBtn: { alignItems: 'center', paddingVertical: 12, borderRadius: RADIUS.xl, borderWidth: 1, borderColor: 'rgba(239,68,68,0.28)', backgroundColor: 'rgba(239,68,68,0.08)' },
+  endSessionText: { fontFamily: FONTS.bodySemi, fontSize: 14, color: COLORS.red },
 });
