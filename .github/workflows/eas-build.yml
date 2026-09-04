@@ -27,6 +27,11 @@ jobs:
         with:
           eas-version: latest
           token: ${{ secrets.EXPO_TOKEN }}
+          # Mặc định action này cài eas-cli bằng yarn — repo chỉ dùng npm (không có yarn.lock),
+          # và yarn global add đang fail trên runner (exit code 1, có thể do runner đổi Node mặc
+          # định lên 24 chưa tương thích với yarn classic cũ). Đổi sang npm — đường đã dùng thành
+          # công cho "Install dependencies" ở bước trên.
+          packager: npm
 
       - name: Build APK
         run: eas build -p android --profile preview --non-interactive
