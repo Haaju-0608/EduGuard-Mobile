@@ -5,6 +5,7 @@ import {
   TouchableOpacity,
   Animated,
   Image,
+  Alert,
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -15,6 +16,8 @@ import { Button } from '../../components/ui/Button';
 import { COLORS, FONTS, RADIUS } from '../../constants/theme';
 import { useAuth } from '../../navigation/AuthContext';
 import { submitBiometricRegistration } from '../../api/biometric';
+import PoseCheckWebView, { PoseCheckWebViewHandle } from '../../components/registration/PoseCheckWebView';
+import { isPoseValidForAngle, poseWarningMessage } from '../../utils/facePose';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -314,9 +317,12 @@ export default function FaceRegistrationScreen() {
   const [photos, setPhotos]             = useState<string[]>([]); // captured URIs
   const [isCapturing, setIsCapturing]   = useState(false);
   const [pendingUri, setPendingUri]     = useState<string | null>(null);
+  const [pendingBase64, setPendingBase64] = useState<string | null>(null);
+  const [checkingPose, setCheckingPose] = useState(false);
   const [errorMsg, setErrorMsg]         = useState('');
 
   const cameraRef    = useRef<CameraView>(null);
+  const poseRef       = useRef<PoseCheckWebViewHandle>(null);
   const flashOpacity = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -346,9 +352,11 @@ export default function FaceRegistrationScreen() {
     });
 
     let uri: string;
+    let base64: string | undefined;
     try {
-      const photo = await cameraRef.current.takePictureAsync({ quality: 0.85 });
+      const photo = await cameraRef.current.takePictureAsync({ quality: 0.85, base64: true });
       uri = photo!.uri;
+      base64 = photo!.base64;
     } catch {
       setErrorMsg('Failed to capture photo. Please try again.');
       setPhase('error');
@@ -357,17 +365,19 @@ export default function FaceRegistrationScreen() {
     }
 
     setPendingUri(uri);
+    setPendingBase64(base64 ?? null);
     setPhase('confirm');
     setIsCapturing(false);
   };
 
   // ── Confirm captured photo ─────────────────────────────────────────────────
 
-  const handleConfirm = () => {
+  const commitPendingPhoto = () => {
     if (!pendingUri) return;
     const newPhotos = [...photos, pendingUri];
     setPhotos(newPhotos);
     setPendingUri(null);
+    setPendingBase64(null);
     if (newPhotos.length < 3) {
       setAngleIndex(newPhotos.length);
       setPhase('scanning');
@@ -376,8 +386,35 @@ export default function FaceRegistrationScreen() {
     }
   };
 
+  // Kiểm tra góc quay đầu trước khi chấp nhận ảnh — fail-open: bất kỳ lỗi/không chắc chắn nào
+  // (WebView chưa sẵn sàng, mất mạng lúc tải MediaPipe, timeout...) đều cho qua bình thường như
+  // trước đây, CHỈ chặn khi thật sự đo được rõ ràng là sai góc. Không phải khoá cứng — vẫn cho
+  // "Use anyway" vì đây chỉ là ước lượng, không phải quyết định cuối cùng (đó là việc của BE lúc
+  // duyệt + AI service lúc xác thực thi thật).
+  const handleConfirm = async () => {
+    if (!pendingUri) return;
+    const angleKey = ANGLES[angleIndex].key;
+
+    if (pendingBase64) {
+      setCheckingPose(true);
+      const result = await poseRef.current?.analyze(pendingBase64).catch(() => null);
+      setCheckingPose(false);
+
+      if (result?.ok && !isPoseValidForAngle(angleKey, result.ratio)) {
+        Alert.alert('Check This Photo', poseWarningMessage(angleKey), [
+          { text: 'Retake', style: 'cancel', onPress: handleRetakeAngle },
+          { text: 'Use Anyway', onPress: commitPendingPhoto },
+        ]);
+        return;
+      }
+    }
+
+    commitPendingPhoto();
+  };
+
   const handleRetakeAngle = () => {
     setPendingUri(null);
+    setPendingBase64(null);
     setPhase('scanning');
   };
 
@@ -442,7 +479,13 @@ export default function FaceRegistrationScreen() {
                 {ANGLES[angleIndex].label} — is your face clearly visible?
               </AppText>
               <Image source={{ uri: pendingUri }} style={{ width: '100%', height: 280, borderRadius: RADIUS.md, marginBottom: 20 }} resizeMode="cover" />
-              <Button label="Looks good!" onPress={handleConfirm} style={{ width: '100%', marginBottom: 12 }} />
+              <Button
+                label={checkingPose ? 'Checking…' : 'Looks good!'}
+                onPress={() => void handleConfirm()}
+                loading={checkingPose}
+                disabled={checkingPose}
+                style={{ width: '100%', marginBottom: 12 }}
+              />
               <TouchableOpacity onPress={handleRetakeAngle} activeOpacity={0.75} style={s.retakeBtn}>
                 <AppText style={s.retakeText}>Retake this photo</AppText>
               </TouchableOpacity>
@@ -521,6 +564,10 @@ export default function FaceRegistrationScreen() {
         pointerEvents="none"
         style={[StyleSheet.absoluteFill, { backgroundColor: '#fff', opacity: flashOpacity }]}
       />
+
+      {/* Ẩn, chỉ dùng để phân tích góc mặt mỗi lần chụp — mount sẵn từ đầu để kịp tải MediaPipe
+          trước khi người dùng chụp xong tấm đầu tiên. */}
+      <PoseCheckWebView ref={poseRef} />
     </View>
   );
 }
