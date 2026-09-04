@@ -69,10 +69,32 @@ export async function getExamSlotsForClass(classId: string): Promise<ExamSlotBri
   return Array.isArray(data) ? data : (data as any).items ?? [];
 }
 
+// BE (AttendanceSessionsController.GetAll) không nhận tham số "status" — query string ?status=
+// dưới đây bị BE bỏ qua hoàn toàn, không lọc gì cả. Sort mặc định là StartTime DESC nên item mới
+// nhất trả về có thể là session VỪA Completed (vd sau khi bấm End Session) chứ không chắc là đang
+// InProgress — phải tự lọc lại ở đây, không tin filter phía server. Lấy vài item gần nhất (không chỉ
+// 1) để không bỏ lỡ session InProgress thật nếu nó không phải item mới nhất theo StartTime.
 export async function getInProgressSessionForClass(classId: string): Promise<AttendanceSession | null> {
   try {
     const data = await apiRequest<{ items?: AttendanceSession[] } | AttendanceSession[]>(
-      `/api/attendance-sessions?classId=${classId}&status=InProgress&pageSize=1`,
+      `/api/attendance-sessions?classId=${classId}&pageSize=5`,
+    );
+    const items = Array.isArray(data) ? data : (data as any).items ?? [];
+    return items.find((s: any) => s?.status === 'InProgress') ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// Trước đây roster chỉ hiện điểm danh khi có session InProgress — vừa bấm End Session xong (BE đã
+// đổi status Completed đúng) thì getInProgressSessionForClass() correctly trả null, nhưng roster
+// dùng chính null đó để bỏ qua luôn bước load record → cả lớp hiện lại Absent dù đã điểm danh Present
+// xong xuôi. Hàm này lấy session GẦN NHẤT bất kể status (kể cả vừa Completed) để roster luôn có gì
+// đó để hiện điểm danh — session InProgress/Resume hay không thì vẫn phải dùng getInProgressSessionForClass.
+export async function getLatestSessionForClass(classId: string): Promise<AttendanceSession | null> {
+  try {
+    const data = await apiRequest<{ items?: AttendanceSession[] } | AttendanceSession[]>(
+      `/api/attendance-sessions?classId=${classId}&pageSize=1`,
     );
     const items = Array.isArray(data) ? data : (data as any).items ?? [];
     return items[0] ?? null;
@@ -95,21 +117,35 @@ export async function openAttendanceSession(
   });
 }
 
-export async function uploadAttendanceVideo(
+export interface AiPhotoAttendanceResult {
+  isMatch: boolean;
+  matchedButWrongClass: boolean;
+  message: string | null;
+  studentId: string | null;
+  studentName: string | null;
+  studentCode: string | null;
+  record: AttendanceRecord | null;
+}
+
+// POST /api/attendance-sessions/{sessionId}/records/ai-photo — 1 ảnh mặt duy nhất, BE tự so khớp
+// với toàn bộ BiometricData đã duyệt (không cần truyền studentId) rồi đánh Present cho đúng người
+// nếu người đó thuộc lớp/ca thi của session. An toàn để gọi lặp lại nhiều lần cho cùng 1 người
+// (BE chỉ update lại record đã có, không tạo trùng) — dùng cho vòng lặp auto-scan bên FaceScanWebView.
+export async function markAttendanceByAiPhoto(
   sessionId: string,
-  videoUri: string,
-): Promise<AttendanceRecord[]> {
+  photoDataUrl: string,
+): Promise<AiPhotoAttendanceResult> {
   const token = getAuthToken();
   const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
 
   const formData = new FormData();
-  formData.append('VideoFile', { uri: videoUri, type: 'video/mp4', name: 'attendance.mp4' } as any);
+  formData.append('PhotoFile', { uri: photoDataUrl, type: 'image/jpeg', name: 'scan.jpg' } as any);
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 180_000); // 3 min timeout
+  const timer = setTimeout(() => controller.abort(), 20_000);
 
   try {
-    const res = await fetch(`${BASE_URL}/api/attendance-sessions/${sessionId}/records/ai-video`, {
+    const res = await fetch(`${BASE_URL}/api/attendance-sessions/${sessionId}/records/ai-photo`, {
       method: 'POST',
       headers,
       body: formData,
@@ -118,37 +154,57 @@ export async function uploadAttendanceVideo(
     clearTimeout(timer);
 
     const rawText = await res.text();
-    console.log('[attendance-video] status:', res.status, 'body:', rawText.slice(0, 500));
-
     let json: any;
     try { json = JSON.parse(rawText); }
     catch { throw new Error(`Server error ${res.status}: ${rawText.slice(0, 200)}`); }
 
     if (!res.ok) {
-      throw new Error(json.message ?? `Upload failed (${res.status})`);
+      throw new Error(json.message ?? `Scan failed (${res.status})`);
     }
-    return (json.data ?? []) as AttendanceRecord[];
+    const data = json.data ?? {};
+    return {
+      isMatch: !!data.isMatch,
+      matchedButWrongClass: !!data.matchedButWrongClass,
+      message: data.message ?? null,
+      studentId: data.studentId ?? null,
+      studentName: data.studentName ?? null,
+      studentCode: data.studentCode ?? null,
+      record: data.record ?? null,
+    };
   } catch (e: any) {
     clearTimeout(timer);
-    if (e.name === 'AbortError') throw new Error('Upload timed out. Please try again.');
+    if (e.name === 'AbortError') throw new Error('Scan timed out. Please try again.');
     throw e;
   }
 }
 
 export async function getSessionRecords(sessionId: string): Promise<AttendanceRecord[]> {
   const data = await apiRequest<{ items?: AttendanceRecord[] } | AttendanceRecord[]>(
-    `/api/attendance-records?sessionId=${sessionId}&pageSize=200`,
+    `/api/attendance-records?sessionId=${sessionId}&pageSize=100`,
   );
-  return Array.isArray(data) ? data : (data as any).items ?? [];
+  const items: AttendanceRecord[] = Array.isArray(data) ? data : (data as any).items ?? [];
+  return items.filter(Boolean);
 }
 
 export async function updateAttendanceRecord(
   recordId: string,
   status: 'Present' | 'Absent',
+  checkinAt?: string,
 ): Promise<AttendanceRecord> {
   return apiRequest<AttendanceRecord>(`/api/attendance-records/${recordId}`, {
     method: 'PUT',
-    body: JSON.stringify({ status, method: 'Manual' }),
+    body: JSON.stringify({
+      status,
+      method: 'Manual',
+      ...(status === 'Present' ? { checkinAt: checkinAt ?? new Date().toISOString() } : {}),
+    }),
+  });
+}
+
+export async function closeAttendanceSession(sessionId: string): Promise<AttendanceSession> {
+  return apiRequest<AttendanceSession>(`/api/attendance-sessions/${sessionId}`, {
+    method: 'PUT',
+    body: JSON.stringify({ status: 'Completed', endTime: new Date().toISOString() }),
   });
 }
 
@@ -156,10 +212,17 @@ export async function createAttendanceRecord(
   sessionId: string,
   studentId: string,
   status: 'Present' | 'Absent',
+  checkinAt?: string,
 ): Promise<AttendanceRecord> {
   return apiRequest<AttendanceRecord>('/api/attendance-records', {
     method: 'POST',
-    body: JSON.stringify({ sessionId, studentId, status, method: 'Manual' }),
+    body: JSON.stringify({
+      sessionId,
+      studentId,
+      status,
+      method: 'Manual',
+      ...(status === 'Present' ? { checkinAt: checkinAt ?? new Date().toISOString() } : {}),
+    }),
   });
 }
 
