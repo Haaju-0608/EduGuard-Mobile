@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  Alert,
   Animated,
   Image,
   ScrollView,
@@ -17,6 +18,8 @@ import { AppText } from '../../components/ui/AppText';
 import { Button } from '../../components/ui/Button';
 import { COLORS, FONTS, RADIUS } from '../../constants/theme';
 import { submitBiometricRegistration, getMyBiometricRequests, BiometricRequest } from '../../api/biometric';
+import PoseCheckWebView, { PoseCheckWebViewHandle } from '../../components/registration/PoseCheckWebView';
+import { isPoseValidForAngle, poseWarningMessage } from '../../utils/facePose';
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 
@@ -176,6 +179,7 @@ export default function FaceReRegistrationScreen() {
   const navigation = useNavigation();
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef    = useRef<CameraView>(null);
+  const poseRef       = useRef<PoseCheckWebViewHandle>(null);
   const flashOpacity = useRef(new Animated.Value(0)).current;
 
   const [phase, setPhase]           = useState<Phase>('reason');
@@ -185,6 +189,8 @@ export default function FaceReRegistrationScreen() {
   const [angleIndex, setAngleIndex] = useState(0);
   const [photos, setPhotos]         = useState<string[]>([]);
   const [pendingUri, setPendingUri] = useState<string | null>(null);
+  const [pendingBase64, setPendingBase64] = useState<string | null>(null);
+  const [checkingPose, setCheckingPose] = useState(false);
   const [isCapturing, setIsCapturing] = useState(false);
   const [facing, setFacing] = useState<'front' | 'back'>('front');
   const [errorMsg, setErrorMsg]     = useState('');
@@ -238,8 +244,9 @@ export default function FaceReRegistrationScreen() {
     });
 
     try {
-      const photo = await cameraRef.current.takePictureAsync({ quality: 0.85 });
+      const photo = await cameraRef.current.takePictureAsync({ quality: 0.85, base64: true });
       setPendingUri(photo!.uri);
+      setPendingBase64(photo!.base64 ?? null);
       setPhase('confirm');
     } catch {
       setErrorMsg('Failed to capture photo. Please try again.');
@@ -249,16 +256,41 @@ export default function FaceReRegistrationScreen() {
     }
   };
 
-  const handleConfirmAngle = () => {
+  const commitPendingPhoto = () => {
     if (!pendingUri) return;
     const newPhotos = [...photos, pendingUri];
     setPhotos(newPhotos);
     setPendingUri(null);
+    setPendingBase64(null);
     if (newPhotos.length < 3) { setAngleIndex(newPhotos.length); setPhase('scanning'); }
     else setPhase('preview');
   };
 
-  const handleRetakeAngle = () => { setPendingUri(null); setPhase('scanning'); };
+  // Fail-open — chỉ chặn khi thật sự đo rõ ràng sai góc, vẫn cho "Use Anyway" vì đây chỉ là ước
+  // lượng cục bộ, không phải quyết định cuối (đó là việc của BE lúc duyệt + AI service lúc xác thực
+  // thi thật). Xem PoseCheckWebView/facePose.ts để hiểu cách đo.
+  const handleConfirmAngle = async () => {
+    if (!pendingUri) return;
+    const angleKey = ANGLES[angleIndex].key;
+
+    if (pendingBase64) {
+      setCheckingPose(true);
+      const result = await poseRef.current?.analyze(pendingBase64).catch(() => null);
+      setCheckingPose(false);
+
+      if (result?.ok && !isPoseValidForAngle(angleKey, result.ratio)) {
+        Alert.alert('Check This Photo', poseWarningMessage(angleKey), [
+          { text: 'Retake', style: 'cancel', onPress: handleRetakeAngle },
+          { text: 'Use Anyway', onPress: commitPendingPhoto },
+        ]);
+        return;
+      }
+    }
+
+    commitPendingPhoto();
+  };
+
+  const handleRetakeAngle = () => { setPendingUri(null); setPendingBase64(null); setPhase('scanning'); };
 
   // ── Submit ────────────────────────────────────────────────────────────────────
 
@@ -508,7 +540,13 @@ export default function FaceReRegistrationScreen() {
                 <AppText variant="semi" color={COLORS.whiteSoft} style={{ textAlign: 'center', marginBottom: 16 }}>
                   {ANGLES[angleIndex].label} — looks good?
                 </AppText>
-                <Button label="Looks good!" onPress={handleConfirmAngle} style={{ width: '100%', marginBottom: 12 }} />
+                <Button
+                  label={checkingPose ? 'Checking…' : 'Looks good!'}
+                  onPress={() => void handleConfirmAngle()}
+                  loading={checkingPose}
+                  disabled={checkingPose}
+                  style={{ width: '100%', marginBottom: 12 }}
+                />
                 <TouchableOpacity onPress={handleRetakeAngle} activeOpacity={0.75} style={{ paddingVertical: 10 }}>
                   <AppText style={{ fontFamily: FONTS.bodySemi, fontSize: 13, color: 'rgba(241,245,255,0.45)', textAlign: 'center' }}>
                     Retake this photo
@@ -617,6 +655,9 @@ export default function FaceReRegistrationScreen() {
 
       {/* Flash overlay */}
       <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: '#fff', opacity: flashOpacity }]} />
+
+      {/* Ẩn, chỉ dùng để phân tích góc mặt mỗi lần chụp */}
+      <PoseCheckWebView ref={poseRef} />
 
       {/* Reason picker modal */}
       <ReasonPickerModal

@@ -73,7 +73,26 @@ export async function uploadRequest<T>(path: string, formData: FormData): Promis
     // Content-Type intentionally omitted — RN sets it with the correct multipart boundary
   };
 
-  const res = await fetch(`${BASE_URL}${path}`, { method: 'POST', headers, body: formData });
+  // Không có timeout trước đây — nếu fetch() không bao giờ resolve/reject (BE trên Render free
+  // tier "ngủ" sau 1 thời gian không có traffic, có thể mất 30-60s+ để tỉnh dậy, cộng với việc
+  // upload 3 ảnh nặng hơn 1 request thường), màn hình cứ đứng ở "Submitting…" vô thời hạn — không
+  // hẳn là lỗi, không hẳn là thành công, người dùng không có cách nào biết chuyện gì đang xảy ra
+  // hay để retry. Thêm AbortController để LUÔN kết thúc bằng 1 lỗi rõ ràng trong thời gian hợp lý.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 45_000);
+
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_URL}${path}`, { method: 'POST', headers, body: formData, signal: controller.signal });
+  } catch (e: any) {
+    if (e?.name === 'AbortError') {
+      throw new Error('Upload timed out. The server may be waking up — please try again in a moment.');
+    }
+    throw new Error('Could not reach the server. Please check your connection and try again.');
+  } finally {
+    clearTimeout(timer);
+  }
+
   const rawText = await res.text();
   console.log(`[upload] ${path} → ${res.status}`, rawText.slice(0, 500));
 
@@ -106,7 +125,22 @@ export async function apiRequest<T>(
     ...(options.headers as Record<string, string> | undefined ?? {}),
   };
 
-  const res = await fetch(`${BASE_URL}${path}`, { ...options, headers });
+  // Cùng lý do timeout ở uploadRequest bên trên — BE Render free tier có thể cold-start 30-60s+,
+  // không có timeout thì request treo vô thời hạn, không lỗi không thành công.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30_000);
+
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_URL}${path}`, { ...options, headers, signal: controller.signal });
+  } catch (e: any) {
+    if (e?.name === 'AbortError') {
+      throw new Error('Request timed out. The server may be waking up — please try again in a moment.');
+    }
+    throw new Error('Could not reach the server. Please check your connection and try again.');
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (res.status === 401) {
     triggerAuthError();
