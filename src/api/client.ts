@@ -78,15 +78,22 @@ export async function uploadRequest<T>(path: string, formData: FormData): Promis
   // upload 3 ảnh nặng hơn 1 request thường), màn hình cứ đứng ở "Submitting…" vô thời hạn — không
   // hẳn là lỗi, không hẳn là thành công, người dùng không có cách nào biết chuyện gì đang xảy ra
   // hay để retry. Thêm AbortController để LUÔN kết thúc bằng 1 lỗi rõ ràng trong thời gian hợp lý.
+  //
+  // 120s (không phải 45s như ban đầu) — endpoint này (POST /api/biometric-requests) nặng hơn hẳn
+  // upload thường: cold-start riêng đã có thể tốn 30-60s (comment trên), CỘNG thêm BE gọi AI service
+  // tới 4 lần (1 lần trích vector bộ 3 ảnh + 3 lần check trùng từng ảnh) trước khi trả response. 45s
+  // gần như luôn hết trước khi BE xử lý xong → abort ở client nhưng BE không có CancellationToken
+  // nào theo dõi việc này nên vẫn chạy tiếp và tạo request thành công — app báo "Submission Failed"
+  // dù SchoolAdmin vẫn thấy request đó (có ảnh) trong hàng chờ duyệt ngay sau đó.
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 45_000);
+  const timer = setTimeout(() => controller.abort(), 120_000);
 
   let res: Response;
   try {
     res = await fetch(`${BASE_URL}${path}`, { method: 'POST', headers, body: formData, signal: controller.signal });
   } catch (e: any) {
     if (e?.name === 'AbortError') {
-      throw new Error('Upload timed out. The server may be waking up — please try again in a moment.');
+      throw new Error('Upload timed out. The server may be waking up — please try again in a moment. Note: this may have still submitted successfully in the background — check your registration status before resubmitting.');
     }
     throw new Error('Could not reach the server. Please check your connection and try again.');
   } finally {
