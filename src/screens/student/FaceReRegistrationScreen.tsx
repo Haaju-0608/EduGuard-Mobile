@@ -305,9 +305,9 @@ export default function FaceReRegistrationScreen() {
     } catch (err) {
       const msg = err instanceof Error ? err.message : '';
       let friendly = 'Registration failed. Please try again.';
-      // BE trả nguyên văn tiếng Việt cho lỗi trùng khuôn mặt — không khớp regex tiếng Anh bên dưới,
+      // BE trả lỗi trùng khuôn mặt bằng tiếng Việt hoặc tiếng Anh (đã đổi qua lại) — giữ cả 2 pattern,
       // xem friendlyBiometricError trong FaceRegistrationScreen.tsx để biết chi tiết.
-      if (/đã được đăng ký|tài khoản khác/i.test(msg)) friendly = 'This face is already registered to a different account. Please contact your school admin if you think this is a mistake.';
+      if (/đã được đăng ký|tài khoản khác|registered by another account/i.test(msg)) friendly = 'This face is already registered to a different account. Please contact your school admin if you think this is a mistake.';
       else if (/reason is required/i.test(msg))     friendly = 'Please enter a reason before submitting.';
       else if (/images must not be empty/i.test(msg)) friendly = 'One or more photos could not be read. Please retake all 3 photos and try again.';
       // "timed out" (2 từ) không khớp /timeout/ ở nhánh network bên dưới, và message gốc đã có sẵn

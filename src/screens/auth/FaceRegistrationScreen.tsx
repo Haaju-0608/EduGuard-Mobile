@@ -294,10 +294,10 @@ function SuccessView({ onContinue }: { onContinue: () => void }) {
 
 function friendlyBiometricError(err: unknown): string {
   const msg = err instanceof Error ? err.message : '';
-  // BE trả nguyên văn tiếng Việt cho lỗi trùng khuôn mặt (BiometricRequestService.cs — "Khuôn mặt
-  // này đã được đăng ký bởi một tài khoản khác..."), không khớp các regex tiếng Anh bên dưới nên
-  // trước đây rơi về message chung "Registration failed." — không rõ lý do thật cho sinh viên.
-  if (/đã được đăng ký|tài khoản khác/i.test(msg))
+  // BE trả lỗi trùng khuôn mặt (BiometricRequestService.cs) — ban đầu tiếng Việt ("Khuôn mặt này đã
+  // được đăng ký bởi một tài khoản khác..."), sau đó Hậu dịch sang tiếng Anh ("This face was
+  // registered by another account..."). Giữ cả 2 pattern để không bị vỡ lại nếu BE đổi qua đổi lại.
+  if (/đã được đăng ký|tài khoản khác|registered by another account/i.test(msg))
     return 'This face is already registered to a different account. Please contact your school admin if you think this is a mistake.';
   if (/images must not be empty/i.test(msg))
     return 'One or more photos could not be read. Please retake all 3 photos and try again.';
