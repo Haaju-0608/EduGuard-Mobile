@@ -305,7 +305,15 @@ export default function FaceReRegistrationScreen() {
     } catch (err) {
       const msg = err instanceof Error ? err.message : '';
       let friendly = 'Registration failed. Please try again.';
-      if (/400|bad request/i.test(msg))        friendly = 'No face detected. Please retake in good lighting with your face clearly visible.';
+      // BE trả nguyên văn tiếng Việt cho lỗi trùng khuôn mặt — không khớp regex tiếng Anh bên dưới,
+      // xem friendlyBiometricError trong FaceRegistrationScreen.tsx để biết chi tiết.
+      if (/đã được đăng ký|tài khoản khác/i.test(msg)) friendly = 'This face is already registered to a different account. Please contact your school admin if you think this is a mistake.';
+      else if (/reason is required/i.test(msg))     friendly = 'Please enter a reason before submitting.';
+      else if (/images must not be empty/i.test(msg)) friendly = 'One or more photos could not be read. Please retake all 3 photos and try again.';
+      // "timed out" (2 từ) không khớp /timeout/ ở nhánh network bên dưới, và message gốc đã có sẵn
+      // cảnh báo "có thể đã submit thành công" — giữ nguyên, đừng thay bằng message network chung.
+      else if (/timed out/i.test(msg))              friendly = msg;
+      else if (/400|bad request/i.test(msg))        friendly = 'No face detected. Please retake in good lighting with your face clearly visible.';
       else if (/409|already|duplicate/i.test(msg)) friendly = 'You already have a pending request. Please wait for admin review.';
       else if (/401|unauthorized|session/i.test(msg)) friendly = 'Your session has expired. Please sign in again.';
       else if (/network|timeout|fetch|connect/i.test(msg)) friendly = 'Could not reach the server. Check your connection and try again.';
